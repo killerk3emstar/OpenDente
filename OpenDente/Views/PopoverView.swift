@@ -164,25 +164,13 @@ struct PopoverView: View {
 
     private var detailsGrid: some View {
         let state = battery.batteryState
+        let items = settings.popoverDetailItems
 
         return VStack(spacing: 6) {
-            if let temp = state.temperature {
-                detailRow("Temperature", value: String(format: "%.1f°C", temp))
-            }
-            if let health = state.healthPercentage {
-                detailRow("Battery Health", value: String(format: "%.1f%%", health))
-            }
-            if let cycles = state.cycleCount {
-                detailRow("Cycle Count", value: "\(cycles)")
-            }
-            if let time = state.timeRemainingFormatted {
-                detailRow(state.isCharging ? "Time to Full" : "Time Remaining", value: time)
-            }
-            if let power = state.systemPower, power > 0 {
-                detailRow("System Power", value: String(format: "%.1f W", power))
-            }
-            if let adapter = state.adapterPower, adapter > 0 {
-                detailRow("Adapter Power", value: String(format: "%.1f W", adapter))
+            ForEach(items) { item in
+                if let row = detailValue(for: item, state: state) {
+                    detailRow(row.label, value: row.value)
+                }
             }
 
             if !battery.smcAvailable {
@@ -195,6 +183,41 @@ struct PopoverView: View {
                 .foregroundStyle(.orange)
                 .padding(.top, 4)
             }
+        }
+    }
+
+    private func detailValue(for item: PopoverDetailItem, state: BatteryState) -> (label: String, value: String)? {
+        switch item {
+        case .temperature:
+            guard let temp = state.temperature else { return nil }
+            return ("Temperature", String(format: "%.1f°C", temp))
+        case .batteryHealth:
+            guard let health = state.healthPercentage else { return nil }
+            return ("Battery Health", String(format: "%.1f%%", health))
+        case .cycleCount:
+            guard let cycles = state.cycleCount else { return nil }
+            return ("Cycle Count", "\(cycles)")
+        case .timeRemaining:
+            guard let time = state.timeRemainingFormatted else { return nil }
+            return (state.isCharging ? "Time to Full" : "Time Remaining", time)
+        case .systemPower:
+            guard let power = state.systemPower, power > 0 else { return nil }
+            return ("System Power", String(format: "%.1f W", power))
+        case .adapterPower:
+            guard let adapter = state.adapterPower, adapter > 0 else { return nil }
+            return ("Adapter Power", String(format: "%.1f W", adapter))
+        case .voltage:
+            guard let voltage = state.voltage else { return nil }
+            return ("Voltage", String(format: "%.2f V", voltage))
+        case .amperage:
+            guard let amperage = state.amperage else { return nil }
+            return ("Current", String(format: "%.3f A", amperage))
+        case .currentCapacity:
+            guard let current = state.currentCapacity, let max = state.maxCapacity else { return nil }
+            return ("Capacity", "\(current) / \(max) mAh")
+        case .batteryPower:
+            guard let power = state.batteryPower, power > 0.1 else { return nil }
+            return ("Battery Power", String(format: "%.1f W", power))
         }
     }
 
@@ -245,9 +268,6 @@ struct PopoverView: View {
     // MARK: - Actions
 
     private func openSettings() {
-        // Close popover first
-        if let appDelegate = NSApp.delegate as? AppDelegate {
-            appDelegate.openSettingsWindow()
-        }
+        AppDelegate.instance?.openSettingsWindow()
     }
 }

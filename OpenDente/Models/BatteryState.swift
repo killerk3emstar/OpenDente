@@ -103,6 +103,58 @@ enum ChargingMode: String, CaseIterable {
     }
 }
 
+/// Items that can be shown in the popover details grid
+enum PopoverDetailItem: String, CaseIterable, Codable, Identifiable {
+    case temperature
+    case batteryHealth
+    case cycleCount
+    case timeRemaining
+    case systemPower
+    case adapterPower
+    case voltage
+    case amperage
+    case currentCapacity
+    case batteryPower
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .temperature:      return "Temperature"
+        case .batteryHealth:    return "Battery Health"
+        case .cycleCount:       return "Cycle Count"
+        case .timeRemaining:    return "Time Remaining"
+        case .systemPower:      return "System Power"
+        case .adapterPower:     return "Adapter Power"
+        case .voltage:          return "Voltage"
+        case .amperage:         return "Current (Amps)"
+        case .currentCapacity:  return "Capacity"
+        case .batteryPower:     return "Battery Power"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .temperature:      return "thermometer.medium"
+        case .batteryHealth:    return "heart.fill"
+        case .cycleCount:       return "arrow.triangle.2.circlepath"
+        case .timeRemaining:    return "clock"
+        case .systemPower:      return "bolt.fill"
+        case .adapterPower:     return "powerplug.fill"
+        case .voltage:          return "minus.plus.batteryblock.fill"
+        case .amperage:         return "arrow.left.arrow.right"
+        case .currentCapacity:  return "battery.75percent"
+        case .batteryPower:     return "battery.100percent.bolt"
+        }
+    }
+
+    /// Default items shown in the popover (in order)
+    static let defaultItems: [PopoverDetailItem] = [
+        .temperature, .batteryHealth, .cycleCount,
+        .timeRemaining, .systemPower, .adapterPower
+    ]
+}
+
 /// Which generation of SMC charging keys to use
 enum SMCChargingAPI {
     case legacy     // CH0B/CH0C/CH0I (M1/M2/M3)

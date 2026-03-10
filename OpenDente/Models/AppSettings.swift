@@ -39,6 +39,26 @@ final class AppSettings: ObservableObject, @unchecked Sendable {
     @AppStorage("useHardwareBatteryPercentage") var useHardwareBatteryPercentage: Bool = false
     @AppStorage("showNotifications") var showNotifications: Bool = true
 
+    // MARK: - Popover Detail Items
+
+    /// Ordered list of enabled detail items in the popover
+    var popoverDetailItems: [PopoverDetailItem] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: "popoverDetailItems"),
+                  let items = try? JSONDecoder().decode([PopoverDetailItem].self, from: data)
+            else {
+                return PopoverDetailItem.defaultItems
+            }
+            return items
+        }
+        set {
+            objectWillChange.send()
+            if let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: "popoverDetailItems")
+            }
+        }
+    }
+
     // MARK: - Computed
 
     /// Lower bound of sailing range

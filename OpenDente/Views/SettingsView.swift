@@ -14,10 +14,13 @@ struct SettingsView: View {
             StatusBarTab()
                 .tabItem { Label("Status Bar", systemImage: "menubar.rectangle") }
 
+            PopoverItemsTab()
+                .tabItem { Label("Popover", systemImage: "list.bullet") }
+
             BatteryInfoTab()
                 .tabItem { Label("Battery", systemImage: "battery.100percent") }
         }
-        .frame(width: 450, height: 360)
+        .frame(width: 450, height: 400)
     }
 }
 
@@ -172,6 +175,98 @@ struct StatusBarTab: View {
         if settings.statusBarShowTemperature { parts.append("32°C") }
         if settings.statusBarShowPower { parts.append("21W") }
         return parts.isEmpty ? "(icon only)" : parts.joined(separator: " ")
+    }
+}
+
+// MARK: - Popover Items Tab
+
+struct PopoverItemsTab: View {
+    @ObservedObject var settings = AppSettings.shared
+    @State private var enabledItems: [PopoverDetailItem] = []
+    @State private var disabledItems: [PopoverDetailItem] = []
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Drag to reorder. Toggle to show/hide.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 6)
+
+            List {
+                Section("Visible") {
+                    ForEach(enabledItems) { item in
+                        PopoverItemRow(item: item, isEnabled: true) {
+                            disableItem(item)
+                        }
+                    }
+                    .onMove { from, to in
+                        enabledItems.move(fromOffsets: from, toOffset: to)
+                        save()
+                    }
+                }
+
+                Section("Hidden") {
+                    ForEach(disabledItems) { item in
+                        PopoverItemRow(item: item, isEnabled: false) {
+                            enableItem(item)
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear { load() }
+    }
+
+    private func load() {
+        enabledItems = settings.popoverDetailItems
+        let enabledSet = Set(enabledItems.map(\.rawValue))
+        disabledItems = PopoverDetailItem.allCases.filter { !enabledSet.contains($0.rawValue) }
+    }
+
+    private func save() {
+        settings.popoverDetailItems = enabledItems
+    }
+
+    private func disableItem(_ item: PopoverDetailItem) {
+        enabledItems.removeAll { $0 == item }
+        disabledItems.append(item)
+        save()
+    }
+
+    private func enableItem(_ item: PopoverDetailItem) {
+        disabledItems.removeAll { $0 == item }
+        enabledItems.append(item)
+        save()
+    }
+}
+
+struct PopoverItemRow: View {
+    let item: PopoverDetailItem
+    let isEnabled: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: item.icon)
+                .font(.system(size: 12))
+                .foregroundStyle(isEnabled ? .primary : .secondary)
+                .frame(width: 18)
+
+            Text(item.displayName)
+                .foregroundStyle(isEnabled ? .primary : .secondary)
+
+            Spacer()
+
+            Button(action: onToggle) {
+                Image(systemName: isEnabled ? "eye.fill" : "eye.slash")
+                    .font(.system(size: 12))
+                    .foregroundStyle(isEnabled ? .blue : .secondary)
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
 

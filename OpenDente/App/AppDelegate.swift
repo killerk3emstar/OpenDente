@@ -4,6 +4,8 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
+    static private(set) var instance: AppDelegate?
+
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private var settingsWindow: NSWindow?
@@ -16,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - App Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppDelegate.instance = self
         NSApp.setActivationPolicy(.accessory)
 
         battery.start()
