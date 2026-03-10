@@ -180,13 +180,14 @@ struct StatusBarTab: View {
 
     private var statusBarIcon: String {
         let state = battery.batteryState
-        if state.isPluggedIn {
-            return state.isCharging ? "battery.100percent.bolt" : "battery.100percent"
+        if state.isCharging { return "battery.100percent.bolt" }
+        switch state.percentage {
+        case 90...100: return "battery.100percent"
+        case 63..<90:  return "battery.75percent"
+        case 38..<63:  return "battery.50percent"
+        case 13..<38:  return "battery.25percent"
+        default:       return "battery.0percent"
         }
-        if state.percentage > 75 { return "battery.100percent" }
-        if state.percentage > 50 { return "battery.75percent" }
-        if state.percentage > 25 { return "battery.50percent" }
-        return "battery.25percent"
     }
 
     private var statusBarPreview: String {

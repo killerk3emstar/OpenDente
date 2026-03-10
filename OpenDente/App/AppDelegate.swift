@@ -52,8 +52,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
-            let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-            button.image = NSImage(systemSymbolName: "battery.75percent", accessibilityDescription: "OpenDente")?.withSymbolConfiguration(config)
             button.imagePosition = .imageLeading
             button.action = #selector(togglePopover)
             button.target = self
@@ -66,22 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let state = battery.batteryState
 
-        let iconName: String
-        if state.isPluggedIn {
-            if state.isCharging {
-                iconName = "battery.100percent.bolt"
-            } else {
-                iconName = "battery.100percent"
-            }
-        } else {
-            if state.percentage > 75 { iconName = "battery.100percent" }
-            else if state.percentage > 50 { iconName = "battery.75percent" }
-            else if state.percentage > 25 { iconName = "battery.50percent" }
-            else { iconName = "battery.25percent" }
-        }
+        let iconName = batteryIconName(percentage: state.percentage, charging: state.isCharging)
         if iconName != lastIconName {
             let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-            button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)?.withSymbolConfiguration(config)
+            button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Battery \(state.percentage)%")?.withSymbolConfiguration(config)
             lastIconName = iconName
         }
 
@@ -133,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let settingsView = SettingsView()
+            .padding(.top, 8)
         let hostingController = NSHostingController(rootView: settingsView)
 
         let window = NSWindow(contentViewController: hostingController)
@@ -154,6 +141,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let self = self, self.popover.isShown {
                 self.popover.performClose(nil)
             }
+        }
+    }
+
+    // MARK: - Battery Icon
+
+    private func batteryIconName(percentage: Int, charging: Bool) -> String {
+        if charging { return "battery.100percent.bolt" }
+        switch percentage {
+        case 88...100: return "battery.100percent"
+        case 63..<88:  return "battery.75percent"
+        case 38..<63:  return "battery.50percent"
+        case 13..<38:  return "battery.25percent"
+        default:       return "battery.0percent"
         }
     }
 }
