@@ -1,0 +1,40 @@
+name: OpenDente
+options:
+  bundleIdPrefix: com.opendente
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    SWIFT_UPCOMING_FEATURE_GLOBAL_ACTOR_ISOLATED_TYPES_USABILITY: false
+
+targets:
+  OpenDente:
+    type: application
+    platform: macOS
+    sources:
+      - path: OpenDente
+        excludes:
+          - Resources/Assets.xcassets/AppIcon.appiconset
+    resources:
+      - path: OpenDente/Resources/Assets.xcassets
+    settings:
+      base:
+        INFOPLIST_FILE: OpenDente/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: OpenDente/Resources/OpenDente.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.opendente.app
+        PRODUCT_NAME: OpenDente
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        ENABLE_HARDENED_RUNTIME: true
+        COMBINE_HIDPI_IMAGES: true
+    entitlements:
+      path: OpenDente/Resources/OpenDente.entitlements
