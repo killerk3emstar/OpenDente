@@ -125,8 +125,12 @@ struct ChargingTab: View {
 
             Section("Other") {
                 Toggle("Automatic Discharge", isOn: $settings.automaticDischarge)
-                Toggle("Stop Charging when Sleeping", isOn: $settings.stopChargingWhenSleeping)
-                Toggle("Use Hardware Battery Percentage", isOn: $settings.useHardwareBatteryPercentage)
+                Toggle("Stop Charging when Sleeping ★", isOn: $settings.stopChargingWhenSleeping)
+                Toggle("Use Hardware Battery Percentage ★", isOn: $settings.useHardwareBatteryPercentage)
+
+                Text("★ Not yet implemented — coming in a future update")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

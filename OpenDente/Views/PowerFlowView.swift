@@ -177,7 +177,8 @@ struct PowerFlowView: View {
         if let adapter = battery.adapterPower, let system = battery.systemPower, adapter > system {
             return adapter - system
         }
-        return battery.batteryPower
+        if let bp = battery.batteryPower { return abs(bp) }
+        return nil
     }
 
     private var systemProportion: CGFloat {

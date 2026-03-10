@@ -80,14 +80,15 @@ final class ChargingManager: ObservableObject {
         // Heat protection takes priority
         if settings.heatProtectionEnabled, let temp = state.temperature {
             if temp >= settings.heatProtectionTemp {
+                // Reset hysteresis timer on every spike (including re-spikes during cooldown)
+                heatProtectionTimer = Date()
                 if mode != .heatProtection {
-                    heatProtectionTimer = Date()
                     inhibitCharging()
                     mode = .heatProtection
                 }
                 return
             } else if mode == .heatProtection {
-                // Hysteresis: wait 5 minutes after temp drops below threshold
+                // Hysteresis: wait 5 minutes after temp last exceeded threshold
                 if let timer = heatProtectionTimer,
                    Date().timeIntervalSince(timer) >= 300 {
                     heatProtectionTimer = nil

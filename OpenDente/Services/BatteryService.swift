@@ -199,9 +199,9 @@ final class BatteryService: ObservableObject {
             }
         }
 
-        // Battery power from voltage * current
+        // Battery power from voltage * current (positive = charging, negative = discharging)
         if let v = data.voltage, let a = data.amperage {
-            data.batteryPower = abs(v * a)
+            data.batteryPower = v * a
         }
 
         // Cycle count
