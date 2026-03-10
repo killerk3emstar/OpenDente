@@ -95,7 +95,7 @@ struct PowerFlowView: View {
 
     private var onBatteryView: some View {
         HStack(spacing: 0) {
-            sourceLabel(icon: "battery.75percent", label: batteryWattsText)
+            sourceLabel(icon: "battery.75percent", label: nil)
 
             VStack(spacing: 4) {
                 if let systemPower = battery.systemPower, systemPower > 0.1 {
@@ -119,14 +119,16 @@ struct PowerFlowView: View {
 
     // MARK: - Components
 
-    private func sourceLabel(icon: String, label: String) -> some View {
+    private func sourceLabel(icon: String, label: String?) -> some View {
         VStack(spacing: 2) {
             Image(systemName: icon)
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
-            Text(label)
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .foregroundStyle(.secondary)
+            if let label, !label.isEmpty {
+                Text(label)
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(width: 44)
     }
@@ -168,10 +170,6 @@ struct PowerFlowView: View {
             return String(format: "%.0fW", adapter)
         }
         return "AC"
-    }
-
-    private var batteryWattsText: String {
-        return "Batt"
     }
 
     private var batteryChargingPower: Double? {
