@@ -111,13 +111,12 @@ struct SMCValue {
         return Double(raw) / 64.0
     }
 
-    /// flt = 32-bit IEEE 754 float (little-endian)
+    /// flt = 32-bit IEEE 754 float (little-endian on ARM)
     var floatValue: Float? {
         guard dataSize >= 4 else { return nil }
-        // Already little-endian on ARM, just reinterpret bytes
-        return bytes.withUnsafeBufferPointer { ptr in
-            ptr.baseAddress!.withMemoryRebound(to: Float.self, capacity: 1) { $0.pointee }
-        }
+        let bits = UInt32(bytes[0]) | UInt32(bytes[1]) << 8 |
+                   UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24
+        return Float(bitPattern: bits)
     }
 }
 

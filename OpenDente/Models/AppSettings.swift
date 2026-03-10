@@ -2,7 +2,8 @@ import Foundation
 import SwiftUI
 
 /// All user-configurable settings, backed by UserDefaults
-final class AppSettings: ObservableObject, @unchecked Sendable {
+@MainActor
+final class AppSettings: ObservableObject {
 
     static let shared = AppSettings()
 

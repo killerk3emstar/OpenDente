@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private var settingsWindow: NSWindow?
     private var eventMonitor: Any?
+    private var lastIconName: String?
 
     private let battery = BatteryService.shared
     private let charging = ChargingManager.shared
@@ -39,6 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         charging.resetToDefaults()
         battery.stop()
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            eventMonitor = nil
+        }
     }
 
     // MARK: - Status Bar
@@ -47,7 +52,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "battery.75percent", accessibilityDescription: "OpenDente")
+            let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+            button.image = NSImage(systemSymbolName: "battery.75percent", accessibilityDescription: "OpenDente")?.withSymbolConfiguration(config)
             button.imagePosition = .imageLeading
             button.action = #selector(togglePopover)
             button.target = self
@@ -73,7 +79,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             else if state.percentage > 25 { iconName = "battery.50percent" }
             else { iconName = "battery.25percent" }
         }
-        button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
+        if iconName != lastIconName {
+            let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+            button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)?.withSymbolConfiguration(config)
+            lastIconName = iconName
+        }
 
         var parts: [String] = []
 

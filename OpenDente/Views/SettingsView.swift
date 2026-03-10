@@ -1,5 +1,6 @@
 import SwiftUI
 import ServiceManagement
+import os.log
 
 /// Settings window with tabbed interface
 struct SettingsView: View {
@@ -51,7 +52,7 @@ struct GeneralTab: View {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            print("[Settings] Failed to set launch at login: \(error)")
+            Logger(subsystem: "com.opendente.app", category: "Settings").error("Failed to set launch at login: \(error.localizedDescription)")
         }
     }
 }
@@ -136,6 +137,7 @@ struct ChargingTab: View {
 
 struct StatusBarTab: View {
     @ObservedObject var settings = AppSettings.shared
+    @ObservedObject var battery = BatteryService.shared
 
     var body: some View {
         Form {
@@ -154,10 +156,13 @@ struct StatusBarTab: View {
                 Text("Preview:")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HStack {
-                    Image(systemName: "battery.75percent.bolt")
-                    Text(statusBarPreview)
-                        .font(.system(size: 12, design: .monospaced))
+                HStack(spacing: 6) {
+                    Image(systemName: statusBarIcon)
+                        .font(.system(size: 15))
+                    if !statusBarPreview.isEmpty {
+                        Text(statusBarPreview)
+                            .font(.system(size: 13, design: .monospaced))
+                    }
                 }
                 .padding(8)
                 .background(
@@ -169,12 +174,30 @@ struct StatusBarTab: View {
         .formStyle(.grouped)
     }
 
+    private var statusBarIcon: String {
+        let state = battery.batteryState
+        if state.isPluggedIn {
+            return state.isCharging ? "battery.100percent.bolt" : "battery.100percent"
+        }
+        if state.percentage > 75 { return "battery.100percent" }
+        if state.percentage > 50 { return "battery.75percent" }
+        if state.percentage > 25 { return "battery.50percent" }
+        return "battery.25percent"
+    }
+
     private var statusBarPreview: String {
+        let state = battery.batteryState
         var parts: [String] = []
-        if settings.statusBarShowPercentage { parts.append("80%") }
-        if settings.statusBarShowTemperature { parts.append("32°C") }
-        if settings.statusBarShowPower { parts.append("21W") }
-        return parts.isEmpty ? "(icon only)" : parts.joined(separator: " ")
+        if settings.statusBarShowPercentage {
+            parts.append("\(state.percentage)%")
+        }
+        if settings.statusBarShowTemperature, let temp = state.temperature {
+            parts.append(String(format: "%.0f°", temp))
+        }
+        if settings.statusBarShowPower, let power = state.systemPower, power > 0 {
+            parts.append(String(format: "%.0fW", power))
+        }
+        return parts.joined(separator: " ")
     }
 }
 

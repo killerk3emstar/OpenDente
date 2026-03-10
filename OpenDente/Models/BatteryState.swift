@@ -27,7 +27,7 @@ struct BatteryState: Equatable {
 
     // MARK: - Computed
     var healthPercentage: Double? {
-        guard let max = maxCapacity, let design = designCapacity, design > 0 else { return nil }
+        guard let max = maxCapacity, let design = designCapacity, design > 0, max > 0 else { return nil }
         return Double(max) / Double(design) * 100.0
     }
 

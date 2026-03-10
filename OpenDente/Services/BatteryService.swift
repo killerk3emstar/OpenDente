@@ -7,7 +7,8 @@ private let log = Logger(subsystem: "com.opendente.app", category: "BatteryServi
 
 /// Monitors battery state using IOKit power source APIs + SMC for detailed data.
 /// Reading does not require root.
-final class BatteryService: ObservableObject, @unchecked Sendable {
+@MainActor
+final class BatteryService: ObservableObject {
 
     static let shared = BatteryService()
 
@@ -28,21 +29,6 @@ final class BatteryService: ObservableObject, @unchecked Sendable {
             try smc.open()
             smcAvailable = true
             log.info("SMC connected successfully")
-
-            // Test a few key reads to verify
-            // Diagnostic: dump key data types and raw values to a file (bypasses log privacy)
-            var diag = "OpenDente SMC Diagnostic\n"
-            diag += "========================\n"
-            for key in ["B0AT", "TB0T", "TB1T", "PSTR", "PDTR", "B0AV", "B0AC", "B0CT", "B0FC", "B0DC", "B0RM", "BUIC", "CH0B", "CHTE"] {
-                if let val = smc.readKeyOptional(key) {
-                    let hexBytes = val.bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
-                    diag += "  \(key): type=\(val.dataType) size=\(val.dataSize) hex=[\(hexBytes)]\n"
-                } else {
-                    diag += "  \(key): not available\n"
-                }
-            }
-            try? diag.write(toFile: "/tmp/opendente_smc_diag.txt", atomically: true, encoding: .utf8)
-            log.info("SMC diagnostics written to /tmp/opendente_smc_diag.txt")
         } catch {
             log.error("SMC not available: \(error.localizedDescription)")
             smcAvailable = false
@@ -86,9 +72,9 @@ final class BatteryService: ObservableObject, @unchecked Sendable {
             percentage: ioKitState.percentage,
             isCharging: ioKitState.isCharging,
             isPluggedIn: ioKitState.isPluggedIn,
-            currentCapacity: ioKitState.currentCapacity ?? smcState.remainingCapacity,
-            maxCapacity: ioKitState.maxCapacity ?? smcState.fullChargeCapacity,
-            designCapacity: ioKitState.designCapacity ?? smcState.designCapacity,
+            currentCapacity: smcState.fullChargeCapacity.map { $0 * ioKitState.percentage / 100 },
+            maxCapacity: smcState.fullChargeCapacity,
+            designCapacity: smcState.designCapacity,
             cycleCount: smcState.cycleCount ?? ioKitState.cycleCount,
             temperature: smcState.temperature,
             voltage: smcState.voltage,
@@ -100,9 +86,7 @@ final class BatteryService: ObservableObject, @unchecked Sendable {
             timeToFull: ioKitState.timeToFull
         )
 
-        DispatchQueue.main.async {
-            self.batteryState = state
-        }
+        batteryState = state
     }
 
     // MARK: - IOKit Power Source (no root needed)
@@ -162,7 +146,6 @@ final class BatteryService: ObservableObject, @unchecked Sendable {
         var adapterPower: Double?
         var batteryPower: Double?
         var cycleCount: Int?
-        var remainingCapacity: Int?
         var fullChargeCapacity: Int?
         var designCapacity: Int?
     }
@@ -172,7 +155,7 @@ final class BatteryService: ObservableObject, @unchecked Sendable {
 
         // Temperature: prefer TB0T/TB1T (flt on Apple Silicon) over B0AT (ui16 deci-Kelvin)
         if let val = smc.readKeyOptional("TB0T") {
-            if val.dataType == "flt " || val.dataType == "flt", let f = val.floatValue {
+            if val.dataType.hasPrefix("flt"), let f = val.floatValue {
                 data.temperature = Double(f)
             } else if let sp = val.sp78Value {
                 data.temperature = sp
@@ -226,10 +209,7 @@ final class BatteryService: ObservableObject, @unchecked Sendable {
             data.cycleCount = Int(raw)
         }
 
-        // Capacity
-        if let raw = smc.readUInt16("B0RM") {
-            data.remainingCapacity = Int(raw)
-        }
+        // Capacity (B0RM byte order is unreliable, compute remaining from percentage)
         if let raw = smc.readUInt16("B0FC") {
             data.fullChargeCapacity = Int(raw)
         }
@@ -246,14 +226,19 @@ final class BatteryService: ObservableObject, @unchecked Sendable {
         timer?.invalidate()
 
         let interval = pollingInterval()
+        if interval != lastPollingInterval {
+            log.debug("Polling interval: \(interval)s")
+        }
         lastPollingInterval = interval
 
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            self?.update()
-            // Re-evaluate polling interval after each update
-            let newInterval = self?.pollingInterval() ?? 30
-            if newInterval != self?.lastPollingInterval {
-                self?.scheduleTimer()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.update()
+                let newInterval = self.pollingInterval()
+                if newInterval != self.lastPollingInterval {
+                    self.scheduleTimer()
+                }
             }
         }
     }

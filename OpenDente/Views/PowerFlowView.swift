@@ -171,9 +171,6 @@ struct PowerFlowView: View {
     }
 
     private var batteryWattsText: String {
-        if let power = battery.systemPower, power > 0.1 {
-            return String(format: "%.0fW", power)
-        }
         return "Batt"
     }
 

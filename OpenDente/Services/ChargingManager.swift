@@ -1,13 +1,23 @@
 import Foundation
 import Combine
+import os.log
+
+private let log = Logger(subsystem: "com.opendente.app", category: "Charging")
 
 /// Manages charging logic: charge limit, sailing mode, heat protection, discharge, top up.
 /// Writes to SMC require root privileges (via privileged helper).
-final class ChargingManager: ObservableObject, @unchecked Sendable {
+@MainActor
+final class ChargingManager: ObservableObject {
 
     static let shared = ChargingManager()
 
-    @Published private(set) var mode: ChargingMode = .idle
+    @Published private(set) var mode: ChargingMode = .idle {
+        didSet {
+            if mode != oldValue {
+                log.info("Mode: \(oldValue.rawValue) → \(self.mode.rawValue)")
+            }
+        }
+    }
     @Published private(set) var chargingAPI: SMCChargingAPI = .unknown
     @Published private(set) var isHelperInstalled = false
 
@@ -25,7 +35,7 @@ final class ChargingManager: ObservableObject, @unchecked Sendable {
 
         // React to battery state changes
         battery.$batteryState
-            .receive(on: DispatchQueue.main)
+            .receive(on: RunLoop.main)
             .sink { [weak self] state in
                 self?.evaluateState(state)
             }
@@ -39,19 +49,19 @@ final class ChargingManager: ObservableObject, @unchecked Sendable {
         // Try Tahoe keys first (newer)
         if smc.keyExists("CHTE") {
             chargingAPI = .tahoe
-            print("[ChargingManager] Detected Tahoe charging API (CHTE/CHIE)")
+            log.info("Detected Tahoe charging API (CHTE/CHIE)")
             return
         }
 
         // Try legacy keys
         if smc.keyExists("CH0B") {
             chargingAPI = .legacy
-            print("[ChargingManager] Detected legacy charging API (CH0B/CH0C)")
+            log.info("Detected legacy charging API (CH0B/CH0C)")
             return
         }
 
         chargingAPI = .unknown
-        print("[ChargingManager] No charging control keys detected")
+        log.info("No charging control keys detected")
     }
 
     // MARK: - State Machine
@@ -156,14 +166,11 @@ final class ChargingManager: ObservableObject, @unchecked Sendable {
         mode = .topUp
     }
 
-    /// End Top Up - restore previous limit
+    /// End Top Up - restore previous limit and re-evaluate state
     private func endTopUp() {
-        if let prev = topUpPreviousLimit {
-            topUpPreviousLimit = nil
-            // Limit is still in settings, just need to re-evaluate
-            _ = prev
-        }
+        topUpPreviousLimit = nil
         mode = .idle
+        evaluateState(battery.batteryState)
     }
 
     /// Manually start discharge
@@ -189,7 +196,7 @@ final class ChargingManager: ObservableObject, @unchecked Sendable {
     /// Disable charging (battery stops receiving charge, Mac runs from adapter)
     private func inhibitCharging() {
         guard chargingAPI != .unknown else {
-            print("[ChargingManager] Cannot inhibit charging: no API detected")
+            log.warning("Cannot inhibit charging: no API detected")
             return
         }
 
@@ -203,10 +210,9 @@ final class ChargingManager: ObservableObject, @unchecked Sendable {
             case .unknown:
                 break
             }
-            print("[ChargingManager] Charging inhibited")
+            log.info("Charging inhibited")
         } catch {
-            print("[ChargingManager] Failed to inhibit charging: \(error.localizedDescription)")
-            print("[ChargingManager] Root privileges required. Install the helper tool.")
+            log.error("Failed to inhibit charging: \(error.localizedDescription). Root privileges required.")
         }
     }
 
@@ -224,9 +230,9 @@ final class ChargingManager: ObservableObject, @unchecked Sendable {
             case .unknown:
                 break
             }
-            print("[ChargingManager] Charging enabled")
+            log.info("Charging enabled")
         } catch {
-            print("[ChargingManager] Failed to enable charging: \(error.localizedDescription)")
+            log.error("Failed to enable charging: \(error.localizedDescription)")
         }
     }
 
@@ -246,9 +252,9 @@ final class ChargingManager: ObservableObject, @unchecked Sendable {
             if enable {
                 inhibitCharging()
             }
-            print("[ChargingManager] Force discharge: \(enable)")
+            log.info("Force discharge: \(enable)")
         } catch {
-            print("[ChargingManager] Failed to set discharge: \(error.localizedDescription)")
+            log.error("Failed to set discharge: \(error.localizedDescription)")
         }
     }
 
