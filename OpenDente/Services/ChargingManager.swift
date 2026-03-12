@@ -19,11 +19,12 @@ final class ChargingManager: ObservableObject {
         }
     }
     @Published private(set) var chargingAPI: SMCChargingAPI = .unknown
-    @Published private(set) var isHelperInstalled = false
+    @Published var isHelperInstalled = false
 
     private let smc = SMCService.shared
     private let battery = BatteryService.shared
     private let settings = AppSettings.shared
+    private let helper = HelperClient.shared
     private var cancellables = Set<AnyCancellable>()
     private var heatProtectionTimer: Date?
     private var topUpPreviousLimit: Int?
@@ -32,6 +33,7 @@ final class ChargingManager: ObservableObject {
 
     func start() {
         detectChargingAPI()
+        connectToHelper()
 
         // React to battery state changes
         battery.$batteryState
@@ -42,9 +44,31 @@ final class ChargingManager: ObservableObject {
             .store(in: &cancellables)
     }
 
+    /// Connect to the helper daemon and start heartbeat
+    private func connectToHelper() {
+        let status = HelperInstaller.status
+        isHelperInstalled = (status == .enabled)
+        log.info("Helper status: \(HelperInstaller.statusDescription)")
+
+        if isHelperInstalled {
+            helper.connect()
+            // Query the helper's detected API
+            helper.getChargingAPI { [weak self] api in
+                // Already dispatched to main by HelperClient
+                Task { @MainActor in
+                    switch api {
+                    case "legacy": self?.chargingAPI = .legacy
+                    case "tahoe":  self?.chargingAPI = .tahoe
+                    default:       break
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - API Detection
 
-    /// Detect which SMC keys this Mac supports for charging control
+    /// Detect which SMC keys this Mac supports for charging control (read-only, no root needed)
     private func detectChargingAPI() {
         // Try Tahoe keys first (newer)
         if smc.keyExists("CHTE") {
@@ -88,14 +112,16 @@ final class ChargingManager: ObservableObject {
                 }
                 return
             } else if mode == .heatProtection {
-                // Hysteresis: wait 5 minutes after temp last exceeded threshold
-                if let timer = heatProtectionTimer,
-                   Date().timeIntervalSince(timer) >= 300 {
-                    heatProtectionTimer = nil
-                    // Fall through to normal evaluation
-                } else {
-                    return // Still in hysteresis period
+                if let timer = heatProtectionTimer {
+                    // Hysteresis: wait 5 minutes after temp last exceeded threshold
+                    if Date().timeIntervalSince(timer) >= 300 {
+                        heatProtectionTimer = nil
+                        // Fall through to normal evaluation
+                    } else {
+                        return // Still in hysteresis period
+                    }
                 }
+                // heatProtectionTimer is nil — hysteresis ended, fall through to re-evaluate
             }
         }
 
@@ -124,8 +150,8 @@ final class ChargingManager: ObservableObject {
                     inhibitCharging()
                     mode = .paused
                 }
-            } else if state.percentage >= lowerBound && (mode == .paused || mode == .sailing) {
-                // In sailing range - don't charge
+            } else if state.percentage >= lowerBound && (mode == .paused || mode == .sailing || mode == .heatProtection) {
+                // In sailing range - don't charge (includes transition from heat protection)
                 if mode != .sailing {
                     inhibitCharging()
                     mode = .sailing
@@ -192,7 +218,7 @@ final class ChargingManager: ObservableObject {
         mode = .paused
     }
 
-    // MARK: - SMC Charging Control
+    // MARK: - SMC Charging Control (via Helper)
 
     /// Disable charging (battery stops receiving charge, Mac runs from adapter)
     private func inhibitCharging() {
@@ -201,19 +227,13 @@ final class ChargingManager: ObservableObject {
             return
         }
 
-        do {
-            switch chargingAPI {
-            case .legacy:
-                try smc.writeKey("CH0B", bytes: [0x02])
-                try smc.writeKey("CH0C", bytes: [0x02])
-            case .tahoe:
-                try smc.writeKey("CHTE", bytes: [0x01, 0x00, 0x00, 0x00])
-            case .unknown:
-                break
+        helper.inhibitCharging { [weak self] success, error in
+            if success {
+                log.info("Charging inhibited")
+            } else {
+                log.error("Failed to inhibit charging: \(error ?? "unknown error")")
+                Task { @MainActor in self?.mode = .idle }
             }
-            log.info("Charging inhibited")
-        } catch {
-            log.error("Failed to inhibit charging: \(error.localizedDescription). Root privileges required.")
         }
     }
 
@@ -221,19 +241,13 @@ final class ChargingManager: ObservableObject {
     private func enableCharging() {
         guard chargingAPI != .unknown else { return }
 
-        do {
-            switch chargingAPI {
-            case .legacy:
-                try smc.writeKey("CH0B", bytes: [0x00])
-                try smc.writeKey("CH0C", bytes: [0x00])
-            case .tahoe:
-                try smc.writeKey("CHTE", bytes: [0x00, 0x00, 0x00, 0x00])
-            case .unknown:
-                break
+        helper.enableCharging { [weak self] success, error in
+            if success {
+                log.info("Charging enabled")
+            } else {
+                log.error("Failed to enable charging: \(error ?? "unknown error")")
+                Task { @MainActor in self?.mode = .idle }
             }
-            log.info("Charging enabled")
-        } catch {
-            log.error("Failed to enable charging: \(error.localizedDescription)")
         }
     }
 
@@ -241,21 +255,13 @@ final class ChargingManager: ObservableObject {
     private func forceDischarge(_ enable: Bool) {
         guard chargingAPI != .unknown else { return }
 
-        do {
-            switch chargingAPI {
-            case .legacy:
-                try smc.writeKey("CH0I", bytes: [enable ? 0x01 : 0x00])
-            case .tahoe:
-                try smc.writeKey("CHIE", bytes: [enable ? 0x08 : 0x00])
-            case .unknown:
-                break
+        helper.forceDischarge(enable: enable) { [weak self] success, error in
+            if success {
+                log.info("Force discharge: \(enable)")
+            } else {
+                log.error("Failed to set discharge: \(error ?? "unknown error")")
+                Task { @MainActor in self?.mode = .idle }
             }
-            if enable {
-                inhibitCharging()
-            }
-            log.info("Force discharge: \(enable)")
-        } catch {
-            log.error("Failed to set discharge: \(error.localizedDescription)")
         }
     }
 
@@ -263,8 +269,19 @@ final class ChargingManager: ObservableObject {
 
     /// Reset all SMC charging keys to defaults (enable charging, stop discharge)
     func resetToDefaults() {
-        enableCharging()
-        forceDischarge(false)
+        helper.resetToDefaults { success, _ in
+            if success {
+                log.info("Reset to defaults via helper")
+            } else {
+                log.warning("Helper reset failed, attempting direct reset")
+            }
+        }
+        mode = .idle
+    }
+
+    /// Synchronous reset for app termination
+    func resetToDefaultsSync() {
+        helper.resetToDefaultsSync()
         mode = .idle
     }
 }

@@ -29,6 +29,7 @@ struct SettingsView: View {
 
 struct GeneralTab: View {
     @ObservedObject var settings = AppSettings.shared
+    @ObservedObject var charging = ChargingManager.shared
 
     var body: some View {
         Form {
@@ -39,6 +40,24 @@ struct GeneralTab: View {
                     }
 
                 Toggle("Show Notifications", isOn: $settings.showNotifications)
+            }
+
+            Section("Privileged Helper") {
+                LabeledContent("Status") {
+                    Text(HelperInstaller.statusDescription)
+                        .foregroundStyle(charging.isHelperInstalled ? .green : .orange)
+                }
+
+                if !charging.isHelperInstalled {
+                    Button("Install Helper") {
+                        HelperInstaller.register()
+                        charging.isHelperInstalled = HelperInstaller.isRegistered
+                    }
+
+                    Text("The helper daemon is required for charging control. It runs as root to write SMC keys. You may need to approve it in System Settings > General > Login Items.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)

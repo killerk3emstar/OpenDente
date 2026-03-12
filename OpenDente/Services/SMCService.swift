@@ -310,7 +310,6 @@ final class SMCService: @unchecked Sendable {
         var outputSize = MemoryLayout<SMCParamStruct>.stride
 
         let keyStr = fourCharString(from: input.key)
-        smcLog.debug("callSMC key=\(keyStr) cmd=\(input.data8) structSize=\(inputSize)")
 
         let result = IOConnectCallStructMethod(
             connection,
@@ -331,7 +330,6 @@ final class SMCService: @unchecked Sendable {
             throw SMCError.readFailed(keyStr, outputData.result)
         }
 
-        smcLog.debug("callSMC OK: key=\(keyStr) keyInfo.dataSize=\(outputData.keyInfo.dataSize) keyInfo.dataType=\(self.fourCharString(from: outputData.keyInfo.dataType))")
         return outputData
     }
 

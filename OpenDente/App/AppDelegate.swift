@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ServiceManagement
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -28,6 +29,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupPopover()
         setupEventMonitor()
+        setupSleepWakeNotifications()
+
+        // Check helper status and prompt for registration if needed
+        checkHelperStatus()
 
         // Update status bar text periodically
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -38,7 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        charging.resetToDefaults()
+        // Synchronous reset with timeout to ensure charging is re-enabled before exit
+        charging.resetToDefaultsSync()
+        HelperClient.shared.disconnect()
         battery.stop()
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
@@ -142,6 +149,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.popover.performClose(nil)
             }
         }
+    }
+
+    // MARK: - Helper
+
+    private func checkHelperStatus() {
+        let status = HelperInstaller.status
+        NSLog("[OpenDente] Helper status: \(HelperInstaller.statusDescription) (raw: \(String(describing: status)))")
+        if status != .enabled {
+            NSLog("[OpenDente] Attempting to register helper daemon...")
+            HelperInstaller.register()
+        }
+        let registered = HelperInstaller.isRegistered
+        NSLog("[OpenDente] Helper registered: \(registered)")
+        charging.isHelperInstalled = registered
+    }
+
+    // MARK: - Sleep/Wake
+
+    private func setupSleepWakeNotifications() {
+        let ws = NSWorkspace.shared.notificationCenter
+        ws.addObserver(
+            self,
+            selector: #selector(willSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        ws.addObserver(
+            self,
+            selector: #selector(didWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+    }
+
+    @objc private func willSleep(_ notification: Notification) {
+        HelperClient.shared.suspendWatchdog()
+    }
+
+    @objc private func didWake(_ notification: Notification) {
+        HelperClient.shared.sendHeartbeat()
     }
 
     // MARK: - Battery Icon

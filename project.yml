@@ -22,6 +22,7 @@ targets:
       - path: OpenDente
         excludes:
           - Resources/Assets.xcassets/AppIcon.appiconset
+      - path: Shared
     resources:
       - path: OpenDente/Resources/Assets.xcassets
     settings:
@@ -32,9 +33,46 @@ targets:
         PRODUCT_NAME: OpenDente
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
-        CODE_SIGN_IDENTITY: "-"
-        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: P4D7A49H95
         ENABLE_HARDENED_RUNTIME: true
         COMBINE_HIDPI_IMAGES: true
     entitlements:
       path: OpenDente/Resources/OpenDente.entitlements
+    dependencies:
+      - target: OpenDenteHelper
+    postBuildScripts:
+      - name: "Copy Helper Tool"
+        script: |
+          HELPER_TOOLS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/HelperTools"
+          mkdir -p "${HELPER_TOOLS_DIR}"
+          cp "${BUILT_PRODUCTS_DIR}/com.opendente.helper" "${HELPER_TOOLS_DIR}/com.opendente.helper"
+        basedOnDependencyAnalysis: false
+      - name: "Copy Helper LaunchDaemon Plist"
+        script: |
+          LAUNCH_DAEMONS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchDaemons"
+          mkdir -p "${LAUNCH_DAEMONS_DIR}"
+          cp "${SRCROOT}/OpenDenteHelper/com.opendente.helper.plist" "${LAUNCH_DAEMONS_DIR}/com.opendente.helper.plist"
+        basedOnDependencyAnalysis: false
+
+  OpenDenteHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - path: OpenDenteHelper
+        excludes:
+          - "*.plist"
+          - "*.entitlements"
+      - path: Shared
+      - path: OpenDente/Services/SMCService.swift
+      - path: OpenDente/Models/BatteryState.swift
+    settings:
+      base:
+        INFOPLIST_FILE: OpenDenteHelper/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.opendente.helper
+        PRODUCT_NAME: com.opendente.helper
+        SKIP_INSTALL: true
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: P4D7A49H95
+        ENABLE_HARDENED_RUNTIME: true
+        CODE_SIGN_ENTITLEMENTS: OpenDenteHelper/OpenDenteHelper.entitlements

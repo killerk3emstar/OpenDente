@@ -25,6 +25,12 @@ struct PopoverView: View {
                     .padding(.bottom, 8)
             }
 
+            if !charging.isHelperInstalled {
+                helperWarning
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+            }
+
             Divider()
 
             detailsGrid
@@ -263,6 +269,25 @@ struct PopoverView: View {
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - Helper Warning
+
+    private var helperWarning: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+            Text("Helper not installed — charging control unavailable")
+                .font(.system(size: 10))
+            Spacer()
+            Button("Install") {
+                openSettings()
+            }
+            .font(.system(size: 10))
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+        }
+        .foregroundStyle(.orange)
     }
 
     // MARK: - Actions
