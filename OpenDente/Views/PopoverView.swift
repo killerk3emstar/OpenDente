@@ -20,7 +20,7 @@ struct PopoverView: View {
                 .padding(.vertical, 12)
 
             if settings.showPowerFlow {
-                PowerFlowView(battery: battery.batteryState)
+                PowerFlowView(battery: battery.batteryState, mode: charging.mode)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
             }
@@ -72,13 +72,23 @@ struct PopoverView: View {
 
             Spacer()
 
-            Button(action: { charging.startTopUp() }) {
-                Label("Top Up", systemImage: "arrow.up.to.line.circle")
-                    .font(.system(size: 12))
+            if charging.mode == .topUp {
+                Button(action: { charging.cancelTopUp() }) {
+                    Label("Cancel", systemImage: "xmark.circle")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(.red)
+            } else {
+                Button(action: { charging.startTopUp() }) {
+                    Label("Top Up", systemImage: "arrow.up.to.line.circle")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!battery.batteryState.isPluggedIn)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(!battery.batteryState.isPluggedIn || charging.mode == .topUp)
 
             Button(action: { openSettings() }) {
                 Image(systemName: "gear")

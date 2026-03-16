@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private var settingsWindow: NSWindow?
     private var eventMonitor: Any?
+    private var statusBarTimer: Timer?
     private var lastIconName: String?
 
     private let battery = BatteryService.shared
@@ -35,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         checkHelperStatus()
 
         // Update status bar text periodically
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        statusBarTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.updateStatusBarText()
             }
@@ -47,6 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         charging.resetToDefaultsSync()
         HelperClient.shared.disconnect()
         battery.stop()
+        statusBarTimer?.invalidate()
+        statusBarTimer = nil
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil

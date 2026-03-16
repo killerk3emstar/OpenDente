@@ -4,6 +4,7 @@ import SwiftUI
 /// without heavy animations. Uses simple bars with numbers.
 struct PowerFlowView: View {
     let battery: BatteryState
+    var mode: ChargingMode = .idle
 
     private var hasAnyPowerData: Bool {
         battery.systemPower != nil || battery.adapterPower != nil || battery.batteryPower != nil
@@ -80,12 +81,21 @@ struct PowerFlowView: View {
                 }
 
                 if !battery.isCharging {
-                    flowBar(
-                        label: "Paused",
-                        icon: "laptopcomputer",
-                        color: .secondary,
-                        proportion: 1.0
-                    )
+                    if mode == .topUp {
+                        flowBar(
+                            label: "Topping Up",
+                            icon: "arrow.up.to.line.circle.fill",
+                            color: .green,
+                            proportion: 1.0
+                        )
+                    } else {
+                        flowBar(
+                            label: "Paused",
+                            icon: "pause.circle.fill",
+                            color: .secondary,
+                            proportion: 1.0
+                        )
+                    }
                 }
             }
         }

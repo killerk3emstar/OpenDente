@@ -201,8 +201,8 @@ struct StatusBarTab: View {
         let state = battery.batteryState
         if state.isCharging { return "battery.100percent.bolt" }
         switch state.percentage {
-        case 90...100: return "battery.100percent"
-        case 63..<90:  return "battery.75percent"
+        case 88...100: return "battery.100percent"
+        case 63..<88:  return "battery.75percent"
         case 38..<63:  return "battery.50percent"
         case 13..<38:  return "battery.25percent"
         default:       return "battery.0percent"

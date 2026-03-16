@@ -15,7 +15,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
     /// Detected charging API for this Mac
     private var chargingAPI: SMCChargingAPI = .unknown
 
-    /// Whether any XPC client is currently connected
+    /// Whether any XPC client is currently connected (accessed under lock)
     private var hasActiveClient = false
 
     init(watchdog: Watchdog) {
@@ -73,7 +73,9 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         }
 
         connection.resume()
+        lock.lock()
         hasActiveClient = true
+        lock.unlock()
         watchdog.receivedHeartbeat()
         NSLog("[HelperDelegate] ACCEPTED connection from pid \(connection.processIdentifier)")
         return true
@@ -120,7 +122,9 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
     // MARK: - Client Disconnect
 
     private func handleClientDisconnect() {
+        lock.lock()
         hasActiveClient = false
+        lock.unlock()
 
         // If charging was inhibited when the app disconnected, reset immediately
         if HelperState.wasChargingInhibited() {
@@ -217,6 +221,10 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                     break
                 }
                 HelperState.write(.inhibited)
+            } else {
+                // Discharge stopped — clear inhibited state so crash recovery
+                // doesn't do an unnecessary reset
+                HelperState.write(.normal)
             }
             log.info("Force discharge: \(enable)")
             reply(true, nil)

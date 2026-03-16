@@ -8,12 +8,34 @@ final class AppSettings: ObservableObject {
     static let shared = AppSettings()
 
     // MARK: - Charging
-    @AppStorage("chargeLimit") var chargeLimit: Int = 80
     @AppStorage("chargingEnabled") var chargingEnabled: Bool = true
+
+    /// Charge limit percentage (20-100), clamped on set
+    var chargeLimit: Int {
+        get {
+            let v = UserDefaults.standard.integer(forKey: "chargeLimit")
+            return v == 0 ? 80 : min(100, max(20, v))
+        }
+        set {
+            objectWillChange.send()
+            UserDefaults.standard.set(min(100, max(20, newValue)), forKey: "chargeLimit")
+        }
+    }
 
     // MARK: - Sailing Mode
     @AppStorage("sailingModeEnabled") var sailingModeEnabled: Bool = true
-    @AppStorage("sailingRange") var sailingRange: Int = 10  // % below limit before recharging
+
+    /// Sailing range percentage (2-25), clamped on set
+    var sailingRange: Int {
+        get {
+            let v = UserDefaults.standard.integer(forKey: "sailingRange")
+            return v == 0 ? 10 : min(25, max(2, v))
+        }
+        set {
+            objectWillChange.send()
+            UserDefaults.standard.set(min(25, max(2, newValue)), forKey: "sailingRange")
+        }
+    }
 
     // MARK: - Heat Protection
     @AppStorage("heatProtectionEnabled") var heatProtectionEnabled: Bool = true
@@ -53,8 +75,8 @@ final class AppSettings: ObservableObject {
             return items
         }
         set {
-            objectWillChange.send()
             if let data = try? JSONEncoder().encode(newValue) {
+                objectWillChange.send()
                 UserDefaults.standard.set(data, forKey: "popoverDetailItems")
             }
         }

@@ -4,6 +4,23 @@ import os.log
 
 private let log = Logger(subsystem: "com.opendente.app", category: "Charging")
 
+/// Protocol for SMC charging control operations. Enables testing without real hardware.
+protocol ChargingControl: Sendable {
+    func enableCharging(completion: (@Sendable (Bool, String?) -> Void)?)
+    func inhibitCharging(completion: (@Sendable (Bool, String?) -> Void)?)
+    func forceDischarge(enable: Bool, completion: (@Sendable (Bool, String?) -> Void)?)
+    func resetToDefaults(completion: (@Sendable (Bool, String?) -> Void)?)
+    nonisolated func resetToDefaultsSync(timeout: TimeInterval)
+}
+
+extension ChargingControl {
+    nonisolated func resetToDefaultsSync() {
+        resetToDefaultsSync(timeout: 2.0)
+    }
+}
+
+extension HelperClient: ChargingControl {}
+
 /// Manages charging logic: charge limit, sailing mode, heat protection, discharge, top up.
 /// Writes to SMC require root privileges (via privileged helper).
 @MainActor
@@ -11,27 +28,38 @@ final class ChargingManager: ObservableObject {
 
     static let shared = ChargingManager()
 
-    @Published private(set) var mode: ChargingMode = .idle {
+    @Published internal(set) var mode: ChargingMode = .idle {
         didSet {
             if mode != oldValue {
-                log.info("Mode: \(oldValue.rawValue) → \(self.mode.rawValue)")
+                log.info("Mode: \(oldValue.displayName) → \(self.mode.displayName)")
             }
         }
     }
-    @Published private(set) var chargingAPI: SMCChargingAPI = .unknown
+    @Published internal(set) var chargingAPI: SMCChargingAPI = .unknown
     @Published var isHelperInstalled = false
 
     private let smc = SMCService.shared
-    private let battery = BatteryService.shared
-    private let settings = AppSettings.shared
-    private let helper = HelperClient.shared
+    private let battery: BatteryService
+    let settings: AppSettings
+    private let helper: ChargingControl
     private var cancellables = Set<AnyCancellable>()
-    private var heatProtectionTimer: Date?
-    private var topUpPreviousLimit: Int?
+    var heatProtectionTimer: Date?
+
+    private convenience init() {
+        self.init(settings: .shared, helper: HelperClient.shared, battery: .shared)
+    }
+
+    /// Initializer with dependency injection for testability
+    init(settings: AppSettings, helper: ChargingControl, battery: BatteryService) {
+        self.settings = settings
+        self.helper = helper
+        self.battery = battery
+    }
 
     // MARK: - Lifecycle
 
     func start() {
+        log.info("Starting — limit: \(self.settings.chargeLimit)%, sailing: \(self.settings.sailingModeEnabled ? "on" : "off"), heat protection: \(self.settings.heatProtectionEnabled ? "on" : "off")")
         detectChargingAPI()
         connectToHelper()
 
@@ -51,9 +79,10 @@ final class ChargingManager: ObservableObject {
         log.info("Helper status: \(HelperInstaller.statusDescription)")
 
         if isHelperInstalled {
-            helper.connect()
+            let client = HelperClient.shared
+            client.connect()
             // Query the helper's detected API
-            helper.getChargingAPI { [weak self] api in
+            client.getChargingAPI { [weak self] api in
                 // Already dispatched to main by HelperClient
                 Task { @MainActor in
                     switch api {
@@ -90,12 +119,12 @@ final class ChargingManager: ObservableObject {
 
     // MARK: - State Machine
 
-    private func evaluateState(_ state: BatteryState) {
+    /// Evaluate battery state and decide charging mode. Internal for testability.
+    func evaluateState(_ state: BatteryState) {
         // Not plugged in = on battery, nothing to control
         guard state.isPluggedIn else {
             if mode == .topUp {
-                // Unplugging during Top Up ends it
-                endTopUp()
+                log.info("Top Up ended: unplugged at \(state.percentage)%")
             }
             mode = .onBattery
             return
@@ -107,6 +136,7 @@ final class ChargingManager: ObservableObject {
                 // Reset hysteresis timer on every spike (including re-spikes during cooldown)
                 heatProtectionTimer = Date()
                 if mode != .heatProtection {
+                    log.warning("Heat protection: \(temp, format: .fixed(precision: 1))°C ≥ \(self.settings.heatProtectionTemp)°C at \(state.percentage)%")
                     inhibitCharging()
                     mode = .heatProtection
                 }
@@ -115,6 +145,7 @@ final class ChargingManager: ObservableObject {
                 if let timer = heatProtectionTimer {
                     // Hysteresis: wait 5 minutes after temp last exceeded threshold
                     if Date().timeIntervalSince(timer) >= 300 {
+                        log.info("Heat protection ended: \(temp, format: .fixed(precision: 1))°C < \(self.settings.heatProtectionTemp)°C, cooldown elapsed")
                         heatProtectionTimer = nil
                         // Fall through to normal evaluation
                     } else {
@@ -138,6 +169,11 @@ final class ChargingManager: ObservableObject {
             return
         }
 
+        // Discharge mode - user-initiated, don't override until unplugged
+        if mode == .discharging {
+            return
+        }
+
         let limit = settings.chargeLimit
 
         // Sailing mode logic
@@ -147,18 +183,24 @@ final class ChargingManager: ObservableObject {
             if state.percentage >= limit {
                 // At or above limit - pause charging
                 if mode != .paused {
+                    log.info("Limit reached: \(state.percentage)% ≥ \(limit)% → inhibiting")
                     inhibitCharging()
                     mode = .paused
                 }
-            } else if state.percentage >= lowerBound && (mode == .paused || mode == .sailing || mode == .heatProtection) {
-                // In sailing range - don't charge (includes transition from heat protection)
+            } else if state.percentage >= lowerBound {
+                // In sailing range — don't charge, coast on adapter power
                 if mode != .sailing {
-                    inhibitCharging()
+                    log.info("Sailing: \(state.percentage)% in range \(lowerBound)–\(limit)%")
+                    // Only send SMC write if charging isn't already inhibited
+                    if mode != .paused {
+                        inhibitCharging()
+                    }
                     mode = .sailing
                 }
-            } else if state.percentage < lowerBound {
-                // Below sailing range - start charging
+            } else {
+                // Below sailing range — charge back up to limit
                 if mode != .charging {
+                    log.info("Below range: \(state.percentage)% < \(lowerBound)% → charging to \(limit)%")
                     enableCharging()
                     mode = .charging
                 }
@@ -167,11 +209,13 @@ final class ChargingManager: ObservableObject {
             // No sailing mode - simple limit
             if state.percentage >= limit {
                 if mode != .paused {
+                    log.info("Limit reached: \(state.percentage)% ≥ \(limit)% → inhibiting")
                     inhibitCharging()
                     mode = .paused
                 }
             } else {
                 if mode != .charging {
+                    log.info("Below limit: \(state.percentage)% < \(limit)% → charging")
                     enableCharging()
                     mode = .charging
                 }
@@ -180,6 +224,7 @@ final class ChargingManager: ObservableObject {
 
         // Automatic discharge: if battery > limit and auto-discharge is on
         if settings.automaticDischarge && state.percentage > limit && mode == .paused {
+            log.info("Auto-discharge: \(state.percentage)% > \(limit)%")
             startDischarge()
         }
     }
@@ -188,32 +233,39 @@ final class ChargingManager: ObservableObject {
 
     /// Start Top Up - temporarily charge to 100%
     func startTopUp() {
-        topUpPreviousLimit = settings.chargeLimit
+        log.info("Top Up started at \(self.battery.batteryState.percentage)% (limit was \(self.settings.chargeLimit)%)")
+
         enableCharging()
         mode = .topUp
     }
 
-    /// End Top Up - restore previous limit and re-evaluate state
-    private func endTopUp() {
-        topUpPreviousLimit = nil
+    /// Cancel Top Up manually — inhibit charging as a safe default,
+    /// next poll will re-evaluate the correct mode.
+    func cancelTopUp() {
+        guard mode == .topUp else { return }
+        log.info("Top Up cancelled by user at \(self.battery.batteryState.percentage)%")
+
+        inhibitCharging()
         mode = .idle
-        evaluateState(battery.batteryState)
     }
 
     /// Manually start discharge
     func startDischarge() {
+        log.info("Discharge started at \(self.battery.batteryState.percentage)%")
         forceDischarge(true)
         mode = .discharging
     }
 
     /// Stop discharge
     func stopDischarge() {
+        log.info("Discharge stopped at \(self.battery.batteryState.percentage)%")
         forceDischarge(false)
         mode = .idle
     }
 
     /// Manually pause charging at current level
     func pauseCharging() {
+        log.info("Charging paused manually at \(self.battery.batteryState.percentage)%")
         inhibitCharging()
         mode = .paused
     }
@@ -239,7 +291,10 @@ final class ChargingManager: ObservableObject {
 
     /// Enable charging (allow battery to charge)
     private func enableCharging() {
-        guard chargingAPI != .unknown else { return }
+        guard chargingAPI != .unknown else {
+            log.warning("Cannot enable charging: no API detected")
+            return
+        }
 
         helper.enableCharging { [weak self] success, error in
             if success {
@@ -253,7 +308,10 @@ final class ChargingManager: ObservableObject {
 
     /// Force discharge (Mac runs from battery while plugged in)
     private func forceDischarge(_ enable: Bool) {
-        guard chargingAPI != .unknown else { return }
+        guard chargingAPI != .unknown else {
+            log.warning("Cannot set discharge: no API detected")
+            return
+        }
 
         helper.forceDischarge(enable: enable) { [weak self] success, error in
             if success {
@@ -281,7 +339,8 @@ final class ChargingManager: ObservableObject {
 
     /// Synchronous reset for app termination
     func resetToDefaultsSync() {
-        helper.resetToDefaultsSync()
+        log.info("App terminating — resetting SMC to defaults")
+        helper.resetToDefaultsSync(timeout: 2.0)
         mode = .idle
     }
 }

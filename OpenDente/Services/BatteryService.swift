@@ -279,8 +279,11 @@ final class BatteryService: ObservableObject {
         if let source = IOPSNotificationCreateRunLoopSource({ context in
             guard let ctx = context else { return }
             let service = Unmanaged<BatteryService>.fromOpaque(ctx).takeUnretainedValue()
-            service.update()
-            service.scheduleTimer() // Re-evaluate polling on power source change
+            // Callback fires on main RunLoop — use assumeIsolated for Swift 6 safety
+            MainActor.assumeIsolated {
+                service.update()
+                service.scheduleTimer()
+            }
         }, context)?.takeRetainedValue() {
             self.runLoopSource = source
             CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
