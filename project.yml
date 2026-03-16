@@ -76,3 +76,17 @@ targets:
         DEVELOPMENT_TEAM: P4D7A49H95
         ENABLE_HARDENED_RUNTIME: true
         CODE_SIGN_ENTITLEMENTS: OpenDenteHelper/OpenDenteHelper.entitlements
+
+  OpenDenteTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: OpenDenteTests
+    dependencies:
+      - target: OpenDente
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.opendente.tests
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: P4D7A49H95
