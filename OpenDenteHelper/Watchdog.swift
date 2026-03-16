@@ -20,6 +20,16 @@ final class Watchdog {
         self.resetAction = resetAction
     }
 
+    deinit {
+        // DispatchSourceTimer crashes if deallocated while suspended.
+        // Resume before cancel to prevent "BUG IN CLIENT OF LIBDISPATCH".
+        if isSuspended {
+            timer?.resume()
+        }
+        timer?.cancel()
+        timer = nil
+    }
+
     /// Start the watchdog timer
     func start() {
         queue.async { [weak self] in

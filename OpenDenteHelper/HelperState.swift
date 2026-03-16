@@ -30,6 +30,13 @@ enum HelperState {
                 log.error("Failed to create state directory: \(error.localizedDescription)")
             }
         }
+        // Always enforce permissions — createDirectory ignores attributes if dir exists,
+        // and a previous version or malicious process could have set wrong permissions.
+        do {
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
+        } catch {
+            log.error("Failed to enforce directory permissions: \(error.localizedDescription)")
+        }
     }
 
     /// Write the current charging state atomically
