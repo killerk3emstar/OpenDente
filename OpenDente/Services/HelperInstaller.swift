@@ -23,15 +23,27 @@ enum HelperInstaller {
         service.status == .enabled
     }
 
-    /// Register the helper daemon. The system may show an authorization prompt.
-    static func register() {
+    /// Register the helper daemon. Returns true if registration succeeded.
+    /// When status is `.requiresApproval`, register() can't help — the user must
+    /// toggle the helper ON in System Settings > General > Login Items.
+    @discardableResult
+    static func register() -> Bool {
         let currentStatus = service.status
+
+        if currentStatus == .requiresApproval {
+            log.info("Helper requires approval — opening System Settings")
+            openSystemSettings()
+            return false
+        }
+
         log.info("Helper status before register: \(String(describing: currentStatus))")
         do {
             try service.register()
             log.info("Helper daemon registered successfully (status now: \(String(describing: service.status)))")
+            return service.status == .enabled
         } catch {
             log.error("Failed to register helper daemon: \(error)")
+            return false
         }
     }
 
@@ -43,6 +55,11 @@ enum HelperInstaller {
         } catch {
             log.error("Failed to unregister helper daemon: \(error.localizedDescription)")
         }
+    }
+
+    /// Open System Settings to the Login Items pane where the user can toggle the helper
+    static func openSystemSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 
     /// Human-readable status description

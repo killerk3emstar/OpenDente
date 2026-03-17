@@ -252,6 +252,12 @@ final class BatteryService: ObservableObject {
             return 2
         }
 
+        // IOKit may return incomplete data at startup — retry quickly
+        if state.percentage == 0 && !state.isPluggedIn && !state.isCharging
+           && state.timeToEmpty == nil && state.timeToFull == nil {
+            return 2
+        }
+
         // On battery - conserve energy
         if state.isOnBattery {
             return 60

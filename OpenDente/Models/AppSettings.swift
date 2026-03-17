@@ -57,6 +57,10 @@ final class AppSettings: ObservableObject {
     // MARK: - Power Flow
     @AppStorage("showPowerFlow") var showPowerFlow: Bool = true
 
+    // MARK: - MagSafe LED
+    @AppStorage("controlMagSafeLED") var controlMagSafeLED: Bool = true
+    @AppStorage("magSafeLEDOffWhenInactive") var magSafeLEDOffWhenInactive: Bool = false
+
     // MARK: - General
     @AppStorage("launchAtLogin") var launchAtLogin: Bool = false
     @AppStorage("useHardwareBatteryPercentage") var useHardwareBatteryPercentage: Bool = false

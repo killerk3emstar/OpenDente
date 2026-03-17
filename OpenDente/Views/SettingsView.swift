@@ -49,18 +49,34 @@ struct GeneralTab: View {
                 }
 
                 if !charging.isHelperInstalled {
-                    Button("Install Helper") {
-                        HelperInstaller.register()
-                        charging.isHelperInstalled = HelperInstaller.isRegistered
-                    }
+                    helperActions
 
-                    Text("The helper daemon is required for charging control. It runs as root to write SMC keys. You may need to approve it in System Settings > General > Login Items.")
+                    Text("The helper daemon is required for charging control. It runs as root to write SMC keys.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var helperActions: some View {
+        let status = HelperInstaller.status
+        if status == .requiresApproval {
+            Button("Open System Settings") {
+                HelperInstaller.openSystemSettings()
+            }
+            Text("Toggle OpenDente ON in Login Items to approve the helper.")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        } else {
+            Button("Install Helper") {
+                if HelperInstaller.register() {
+                    charging.connectToHelper()
+                }
+            }
+        }
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
@@ -144,6 +160,19 @@ struct ChargingTab: View {
 
             Section("Other") {
                 Toggle("Automatic Discharge", isOn: $settings.automaticDischarge)
+                Toggle("Control MagSafe LED", isOn: $settings.controlMagSafeLED)
+                if settings.controlMagSafeLED {
+                    Toggle("Turn off LED when not charging", isOn: $settings.magSafeLEDOffWhenInactive)
+                        .padding(.leading, 16)
+                    Text("Off when limit reached/sailing, orange when charging. Otherwise green/orange.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 16)
+                } else {
+                    Text("Orange when charging, green when limit reached. Requires MagSafe.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Toggle("Stop Charging when Sleeping ★", isOn: $settings.stopChargingWhenSleeping)
                 Toggle("Use Hardware Battery Percentage ★", isOn: $settings.useHardwareBatteryPercentage)
 
@@ -161,6 +190,7 @@ struct ChargingTab: View {
 struct StatusBarTab: View {
     @ObservedObject var settings = AppSettings.shared
     @ObservedObject var battery = BatteryService.shared
+    @ObservedObject var charging = ChargingManager.shared
 
     var body: some View {
         Form {
@@ -199,14 +229,7 @@ struct StatusBarTab: View {
 
     private var statusBarIcon: String {
         let state = battery.batteryState
-        if state.isCharging { return "battery.100percent.bolt" }
-        switch state.percentage {
-        case 88...100: return "battery.100percent"
-        case 63..<88:  return "battery.75percent"
-        case 38..<63:  return "battery.50percent"
-        case 13..<38:  return "battery.25percent"
-        default:       return "battery.0percent"
-        }
+        return charging.mode.batteryIconName(percentage: state.percentage, isCharging: state.isCharging)
     }
 
     private var statusBarPreview: String {

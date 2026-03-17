@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import ServiceManagement
 
@@ -11,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private var settingsWindow: NSWindow?
     private var eventMonitor: Any?
-    private var statusBarTimer: Timer?
+    private var cancellables = Set<AnyCancellable>()
     private var lastIconName: String?
 
     private let battery = BatteryService.shared
@@ -35,12 +36,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Check helper status and prompt for registration if needed
         checkHelperStatus()
 
-        // Update status bar text periodically
-        statusBarTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.updateStatusBarText()
-            }
-        }
+        // Update status bar reactively when battery state or mode changes
+        battery.$batteryState
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateStatusBarText() }
+            .store(in: &cancellables)
+
+        charging.$mode
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.updateStatusBarText() }
+            .store(in: &cancellables)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -48,8 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         charging.resetToDefaultsSync()
         HelperClient.shared.disconnect()
         battery.stop()
-        statusBarTimer?.invalidate()
-        statusBarTimer = nil
+        cancellables.removeAll()
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil
@@ -74,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let state = battery.batteryState
 
-        let iconName = batteryIconName(percentage: state.percentage, charging: state.isCharging)
+        let iconName = charging.mode.batteryIconName(percentage: state.percentage, isCharging: state.isCharging)
         if iconName != lastIconName {
             let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
             button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Battery \(state.percentage)%")?.withSymbolConfiguration(config)
@@ -159,13 +163,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func checkHelperStatus() {
         let status = HelperInstaller.status
         NSLog("[OpenDente] Helper status: \(HelperInstaller.statusDescription) (raw: \(String(describing: status)))")
-        if status != .enabled {
+
+        switch status {
+        case .notRegistered:
             NSLog("[OpenDente] Attempting to register helper daemon...")
             HelperInstaller.register()
+        case .requiresApproval:
+            // Don't call register() — it always fails. User must toggle in System Settings.
+            NSLog("[OpenDente] Helper needs approval in System Settings > Login Items")
+        case .enabled:
+            NSLog("[OpenDente] Helper is enabled")
+        case .notFound:
+            NSLog("[OpenDente] Helper binary not found in app bundle")
+        @unknown default:
+            break
         }
-        let registered = HelperInstaller.isRegistered
-        NSLog("[OpenDente] Helper registered: \(registered)")
-        charging.isHelperInstalled = registered
+
+        charging.isHelperInstalled = HelperInstaller.isRegistered
+        NSLog("[OpenDente] Helper registered: \(charging.isHelperInstalled)")
     }
 
     // MARK: - Sleep/Wake
@@ -194,16 +209,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HelperClient.shared.sendHeartbeat()
     }
 
-    // MARK: - Battery Icon
-
-    private func batteryIconName(percentage: Int, charging: Bool) -> String {
-        if charging { return "battery.100percent.bolt" }
-        switch percentage {
-        case 88...100: return "battery.100percent"
-        case 63..<88:  return "battery.75percent"
-        case 38..<63:  return "battery.50percent"
-        case 13..<38:  return "battery.25percent"
-        default:       return "battery.0percent"
-        }
-    }
 }

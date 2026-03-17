@@ -16,9 +16,20 @@ final class HelperClient: @unchecked Sendable {
 
     // MARK: - Connection
 
-    /// Establish XPC connection to the helper daemon
+    /// Establish XPC connection to the helper daemon.
+    /// Safe to call multiple times — disconnects existing connection first.
     @MainActor
     func connect() {
+        // Disconnect existing connection to avoid leaking XPC connections
+        lock.lock()
+        let existing = connection
+        connection = nil
+        lock.unlock()
+        if existing != nil {
+            stopHeartbeat()
+            existing?.invalidate()
+        }
+
         let conn = NSXPCConnection(
             machServiceName: HelperConstants.machServiceName,
             options: .privileged
@@ -141,7 +152,11 @@ final class HelperClient: @unchecked Sendable {
 
     func suspendWatchdog() {
         withProxy { helper in
-            helper.suspendWatchdog { _ in }
+            helper.suspendWatchdog { success in
+                if !success {
+                    log.warning("suspendWatchdog failed")
+                }
+            }
         }
     }
 
@@ -161,6 +176,19 @@ final class HelperClient: @unchecked Sendable {
         }
     }
 
+    func setMagSafeLED(color: UInt8, completion: (@Sendable (Bool, String?) -> Void)? = nil) {
+        withProxy { helper in
+            helper.setMagSafeLED(color: color) { success, error in
+                if let error {
+                    log.debug("setMagSafeLED failed: \(error)")
+                }
+                if let completion {
+                    DispatchQueue.main.async { completion(success, error) }
+                }
+            }
+        }
+    }
+
     /// Synchronous reset with timeout — for use during app termination
     nonisolated func resetToDefaultsSync(timeout: TimeInterval = 2.0) {
         let semaphore = DispatchSemaphore(value: 0)
@@ -176,29 +204,10 @@ final class HelperClient: @unchecked Sendable {
 
     private func withProxy(block: @escaping (HelperProtocol) -> Void) {
         lock.lock()
-        // Auto-reconnect if connection was invalidated (helper restart)
-        if connection == nil {
-            let conn = NSXPCConnection(
-                machServiceName: HelperConstants.machServiceName,
-                options: .privileged
-            )
-            conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
-            conn.invalidationHandler = { [weak self] in
-                log.info("XPC connection invalidated")
-                self?.lock.lock()
-                self?.connection = nil
-                self?.lock.unlock()
-            }
-            conn.interruptionHandler = {
-                log.warning("XPC connection interrupted (transient)")
-            }
-            conn.resume()
-            connection = conn
-            log.info("Auto-reconnected to helper")
-        }
         let conn = connection
         lock.unlock()
 
+        // No connection — caller must call connect() first via connectToHelper()
         guard let conn else { return }
 
         let helper = conn.remoteObjectProxyWithErrorHandler { error in
@@ -213,3 +222,4 @@ final class HelperClient: @unchecked Sendable {
         block(proxy)
     }
 }
+

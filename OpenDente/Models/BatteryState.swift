@@ -37,20 +37,11 @@ struct BatteryState: Equatable {
         isPluggedIn ? "Power Adapter" : "Battery"
     }
 
-    var timeRemainingFormatted: String? {
-        let minutes: Int?
-        if isCharging {
-            minutes = timeToFull
-        } else {
-            minutes = timeToEmpty
-        }
-        guard let min = minutes, min > 0, min < 6000 else { return nil }
-        let h = min / 60
-        let m = min % 60
-        if h > 0 {
-            return "\(h)h \(m)m"
-        }
-        return "\(m)m"
+    /// Format a duration in minutes as "Xh Ym" or "Ym"
+    static func formatMinutes(_ minutes: Int) -> String {
+        let h = minutes / 60
+        let m = minutes % 60
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
     }
 
     static let unknown = BatteryState(
@@ -85,6 +76,68 @@ enum ChargingMode: String, CaseIterable {
         case .heatProtection: return "Heat Protection"
         case .onBattery:      return "On Battery"
         case .idle:           return "Idle"
+        }
+    }
+
+    /// Time remaining label and value for the popover detail row.
+    /// Returns nil for modes where time remaining should be hidden.
+    func timeRemainingDisplay(
+        chargeLimit: Int,
+        percentage: Int,
+        timeToFull: Int?,
+        timeToEmpty: Int?
+    ) -> (label: String, value: String)? {
+        switch self {
+        case .charging:
+            if percentage >= chargeLimit {
+                return ("Time to \(chargeLimit)%", "Reached")
+            }
+            guard let ttf = timeToFull, ttf > 0, ttf < 6000 else {
+                return ("Time to \(chargeLimit)%", "Calculating…")
+            }
+            let remaining = 100 - percentage
+            guard remaining > 0 else { return ("Time to \(chargeLimit)%", "Calculating…") }
+            let toLimit = chargeLimit - percentage
+            let estimated = max(1, Int(Double(ttf) * Double(toLimit) / Double(remaining)))
+            return ("Time to \(chargeLimit)%", BatteryState.formatMinutes(estimated))
+
+        case .topUp:
+            if percentage >= 100 {
+                return ("Time to Full", "Charged")
+            }
+            guard let ttf = timeToFull, ttf > 0, ttf < 6000 else {
+                return ("Time to Full", "Calculating…")
+            }
+            return ("Time to Full", BatteryState.formatMinutes(ttf))
+
+        case .discharging, .onBattery:
+            guard let tte = timeToEmpty, tte > 0, tte < 6000 else {
+                return ("Time Remaining", "Calculating…")
+            }
+            return ("Time Remaining", BatteryState.formatMinutes(tte))
+
+        case .paused, .sailing:
+            return ("Time Remaining", "–")
+
+        case .heatProtection:
+            return ("Time Remaining", "Paused")
+
+        case .idle, .calibrating:
+            return nil
+        }
+    }
+
+    /// SF Symbol name for the status bar battery icon
+    func batteryIconName(percentage: Int, isCharging: Bool) -> String {
+        if isCharging || self == .charging || self == .topUp {
+            return "battery.100percent.bolt"
+        }
+        switch percentage {
+        case 88...100: return "battery.100percent"
+        case 63..<88:  return "battery.75percent"
+        case 38..<63:  return "battery.50percent"
+        case 13..<38:  return "battery.25percent"
+        default:       return "battery.0percent"
         }
     }
 

@@ -214,8 +214,12 @@ struct PopoverView: View {
             guard let cycles = state.cycleCount else { return nil }
             return ("Cycle Count", "\(cycles)")
         case .timeRemaining:
-            guard let time = state.timeRemainingFormatted else { return nil }
-            return (state.isCharging ? "Time to Full" : "Time Remaining", time)
+            return charging.mode.timeRemainingDisplay(
+                chargeLimit: settings.chargeLimit,
+                percentage: state.percentage,
+                timeToFull: state.timeToFull,
+                timeToEmpty: state.timeToEmpty
+            )
         case .systemPower:
             guard let power = state.systemPower, power > 0 else { return nil }
             return ("System Power", String(format: "%.1f W", power))
@@ -283,19 +287,34 @@ struct PopoverView: View {
 
     // MARK: - Helper Warning
 
+    private var needsHelperApproval: Bool {
+        HelperInstaller.status == .requiresApproval
+    }
+
     private var helperWarning: some View {
         HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 10))
-            Text("Helper not installed — charging control unavailable")
+            Text(needsHelperApproval
+                 ? "Helper needs approval in System Settings"
+                 : "Helper not installed — charging control unavailable")
                 .font(.system(size: 10))
             Spacer()
-            Button("Install") {
-                openSettings()
+            if needsHelperApproval {
+                Button("Approve") {
+                    HelperInstaller.openSystemSettings()
+                }
+                .font(.system(size: 10))
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            } else {
+                Button("Install") {
+                    openSettings()
+                }
+                .font(.system(size: 10))
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
             }
-            .font(.system(size: 10))
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
         }
         .foregroundStyle(.orange)
     }
