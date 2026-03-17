@@ -356,43 +356,41 @@ struct BatteryInfoTab: View {
         Form {
             Section("Battery") {
                 infoRow("macOS Percentage", value: "\(state.percentage)%")
-                if let hw = state.hardwarePercentage {
-                    infoRow("Hardware SoC", value: "\(hw)%")
-                }
+                validatedRow("Hardware SoC", raw: state.hardwarePercentage, format: { "\($0)%" })
                 if let current = state.currentCapacity, let max = state.maxCapacity {
-                    infoRow("Capacity", value: "\(current) / \(max) mAh")
+                    validatedRow("Capacity", value: "\(current) / \(max) mAh",
+                                 warn: max < 500 || max > 20000 || current < 0 || current > max * 11 / 10)
                 }
-                if let design = state.designCapacity {
-                    infoRow("Design Capacity", value: "\(design) mAh")
-                }
+                validatedRow("Design Capacity", raw: state.designCapacity, format: { "\($0) mAh" },
+                             warn: { $0 < 500 || $0 > 20000 })
                 if let health = state.healthPercentage {
-                    infoRow("Health", value: String(format: "%.1f%%", health))
+                    validatedRow("Health", value: String(format: "%.1f%%", health),
+                                 warn: health < 0 || health > 120)
                 }
-                if let cycles = state.cycleCount {
-                    infoRow("Cycle Count", value: "\(cycles)")
-                }
-                if let temp = state.temperature {
-                    infoRow("Temperature", value: String(format: "%.1f°C", temp))
-                }
+                validatedRow("Cycle Count", raw: state.cycleCount, format: { "\($0)" },
+                             warn: { $0 < 0 || $0 >= 10000 })
+                validatedRow("Temperature", raw: state.temperature,
+                             format: { String(format: "%.1f\u{00B0}C", $0) },
+                             warn: { $0 < -20 || $0 > 100 })
             }
 
             Section("Power") {
                 infoRow("Source", value: state.powerSource)
-                if let voltage = state.voltage {
-                    infoRow("Voltage", value: String(format: "%.2f V", voltage))
-                }
-                if let amperage = state.amperage {
-                    infoRow("Current", value: String(format: "%.2f A", amperage))
-                }
-                if let power = state.batteryPower {
-                    infoRow("Battery Power", value: String(format: "%.1f W", abs(power)))
-                }
-                if let system = state.systemPower {
-                    infoRow("System Power", value: String(format: "%.1f W", system))
-                }
-                if let adapter = state.adapterPower {
-                    infoRow("Adapter Power", value: String(format: "%.1f W", adapter))
-                }
+                validatedRow("Voltage", raw: state.voltage,
+                             format: { String(format: "%.2f V", $0) },
+                             warn: { $0 < 1 || $0 > 30 })
+                validatedRow("Current", raw: state.amperage,
+                             format: { String(format: "%.2f A", $0) },
+                             warn: { abs($0) > 10 })
+                validatedRow("Battery Power", raw: state.batteryPower,
+                             format: { String(format: "%.1f W", abs($0)) },
+                             warn: { abs($0) > 200 })
+                validatedRow("System Power", raw: state.systemPower,
+                             format: { String(format: "%.1f W", $0) },
+                             warn: { $0 < 0 || $0 > 200 })
+                validatedRow("Adapter Power", raw: state.adapterPower,
+                             format: { String(format: "%.1f W", $0) },
+                             warn: { $0 < 0 || $0 > 200 })
             }
 
             Section("Control") {
@@ -432,6 +430,33 @@ struct BatteryInfoTab: View {
         LabeledContent(label) {
             Text(value)
                 .font(.system(.body, design: .monospaced))
+                .textSelection(.enabled)
+        }
+    }
+
+    /// Show a value with warning if out of expected range, or "–" if unavailable
+    private func validatedRow<T>(_ label: String, raw: T?, format: (T) -> String, warn: ((T) -> Bool)? = nil) -> some View {
+        LabeledContent(label) {
+            if let val = raw {
+                let isWarning = warn?(val) ?? false
+                Text(format(val))
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(isWarning ? .orange : .primary)
+                    .textSelection(.enabled)
+            } else {
+                Text("–")
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Overload for pre-formatted string values
+    private func validatedRow(_ label: String, value: String, warn: Bool) -> some View {
+        LabeledContent(label) {
+            Text(value)
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(warn ? .orange : .primary)
                 .textSelection(.enabled)
         }
     }

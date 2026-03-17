@@ -224,15 +224,26 @@ final class BatteryService: ObservableObject {
             data.cycleCount = Int(raw)
         }
 
-        // Capacity — B0RM uses reverse (big-endian) byte order per Asahi Linux docs
-        if let val = smc.readKeyOptional("B0RM"), let raw = val.uint16BigEndian {
-            data.remainingCapacity = Int(raw)
-        }
+        // Capacity
         if let raw = smc.readUInt16("B0FC") {
             data.fullChargeCapacity = Int(raw)
         }
         if let raw = smc.readUInt16("B0DC") {
             data.designCapacity = Int(raw)
+        }
+
+        // B0RM uses big-endian byte order per Asahi Linux docs, but try both.
+        // Use whichever gives a plausible ratio against B0FC.
+        if let val = smc.readKeyOptional("B0RM"), let fc = data.fullChargeCapacity, fc > 0 {
+            let be = val.uint16BigEndian.map(Int.init) ?? -1
+            let le = val.uint16Value.map(Int.init) ?? -1
+            let beRatio = Double(be) / Double(fc)
+            let leRatio = Double(le) / Double(fc)
+            if be >= 0 && beRatio <= 1.1 {
+                data.remainingCapacity = be
+            } else if le >= 0 && leRatio <= 1.1 {
+                data.remainingCapacity = le
+            }
         }
 
         return data
