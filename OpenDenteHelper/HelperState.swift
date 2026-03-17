@@ -48,7 +48,7 @@ enum HelperState {
                 atomically: true,
                 encoding: .utf8
             )
-            log.debug("State written: \(state.rawValue)")
+            log.info("State written: \(state.rawValue, privacy: .public)")
         } catch {
             log.error("Failed to write state: \(error.localizedDescription)")
         }

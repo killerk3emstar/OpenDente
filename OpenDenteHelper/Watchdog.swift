@@ -98,6 +98,10 @@ final class Watchdog {
     private func check() {
         let elapsed = Date().timeIntervalSince(lastHeartbeat)
 
+        if elapsed > 60 {
+            log.info("Heartbeat gap: \(Int(elapsed))s since last heartbeat")
+        }
+
         guard elapsed > HelperConstants.watchdogTimeout else { return }
         guard HelperState.wasChargingInhibited() else {
             log.debug("Watchdog: timeout but charging not inhibited, ignoring")

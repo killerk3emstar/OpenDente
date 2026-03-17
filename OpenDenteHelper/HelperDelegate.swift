@@ -15,6 +15,9 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
     /// Detected charging API for this Mac
     private var chargingAPI: SMCChargingAPI = .unknown
 
+    /// Whether this Mac has a MagSafe LED controllable via ACLC
+    private var hasMagSafeLED = false
+
     /// Whether any XPC client is currently connected (accessed under lock)
     private var hasActiveClient = false
 
@@ -46,6 +49,49 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         } else {
             chargingAPI = .unknown
             log.info("No charging control keys detected")
+        }
+
+        // Check for MagSafe LED control (not all Macs have MagSafe)
+        hasMagSafeLED = smc.keyExists("ACLC")
+        log.info("MagSafe LED (ACLC): \(self.hasMagSafeLED ? "available" : "not found")")
+    }
+
+    // MARK: - Verification
+
+    /// Read back the charging key after a write to confirm it took effect.
+    /// `expected` = true means we expect charging to be inhibited.
+    private func verifyChargingKey(expected inhibited: Bool) {
+        switch chargingAPI {
+        case .legacy:
+            if let val = smc.readKeyOptional("CH0B") {
+                let byte = val.uint8Value ?? 0
+                let hex = String(byte, radix: 16, uppercase: true)
+                let ok = inhibited ? (byte == 0x02) : (byte == 0x00)
+                if ok {
+                    log.info("CH0B readback OK: 0x\(hex, privacy: .public)")
+                } else {
+                    let expected = inhibited ? "0x02" : "0x00"
+                    log.error("CH0B readback MISMATCH: got 0x\(hex, privacy: .public), expected \(expected, privacy: .public)")
+                }
+            } else {
+                log.warning("CH0B readback failed: key not readable")
+            }
+        case .tahoe:
+            if let val = smc.readKeyOptional("CHTE") {
+                let byte0 = val.uint8Value ?? 0xFF
+                let hex = String(byte0, radix: 16, uppercase: true)
+                let ok = inhibited ? (byte0 == 0x01) : (byte0 == 0x00)
+                if ok {
+                    log.info("CHTE readback OK: first byte 0x\(hex, privacy: .public)")
+                } else {
+                    let expected = inhibited ? "0x01" : "0x00"
+                    log.error("CHTE readback MISMATCH: first byte 0x\(hex, privacy: .public), expected \(expected, privacy: .public)")
+                }
+            } else {
+                log.warning("CHTE readback failed: key not readable")
+            }
+        case .unknown:
+            break
         }
     }
 
@@ -123,11 +169,14 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
 
     private func handleClientDisconnect() {
         lock.lock()
+        let state = HelperState.read()
         hasActiveClient = false
         lock.unlock()
 
+        log.info("Client disconnected (last state: \(state?.rawValue ?? "none", privacy: .public))")
+
         // If charging was inhibited when the app disconnected, reset immediately
-        if HelperState.wasChargingInhibited() {
+        if state == .inhibited {
             log.warning("Client disconnected while charging inhibited — resetting to safe defaults")
             resetChargingDirect()
         }
@@ -154,6 +203,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             case .unknown:
                 break
             }
+            verifyChargingKey(expected: false)
             HelperState.write(.normal)
             log.info("Charging enabled")
             reply(true, nil)
@@ -182,6 +232,8 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             case .unknown:
                 break
             }
+            // Read-back verification: confirm the write took effect
+            verifyChargingKey(expected: true)
             HelperState.write(.inhibited)
             log.info("Charging inhibited")
             reply(true, nil)
@@ -222,9 +274,11 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 }
                 HelperState.write(.inhibited)
             } else {
-                // Discharge stopped — clear inhibited state so crash recovery
-                // doesn't do an unnecessary reset
-                HelperState.write(.normal)
+                // Discharge stopped but charging keys are still inhibited
+                // (we only cleared the discharge key above).
+                // Write .inhibited so crash recovery resets if helper dies
+                // before the app calls enableCharging() on the next cycle.
+                HelperState.write(.inhibited)
             }
             log.info("Force discharge: \(enable)")
             reply(true, nil)
@@ -264,6 +318,26 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         }
     }
 
+    func setMagSafeLED(color: UInt8, reply: @escaping (Bool, String?) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard hasMagSafeLED else {
+            reply(false, "No MagSafe LED (ACLC key not found)")
+            return
+        }
+
+        do {
+            try smc.writeKey("ACLC", bytes: [color])
+            let hex = String(color, radix: 16, uppercase: true)
+            log.info("MagSafe LED set to 0x\(hex, privacy: .public)")
+            reply(true, nil)
+        } catch {
+            log.error("Failed to set MagSafe LED: \(error.localizedDescription)")
+            reply(false, error.localizedDescription)
+        }
+    }
+
     // MARK: - Direct Reset (for signal handlers and crash recovery)
 
     /// Reset charging without going through XPC. Used by signal handlers and crash recovery.
@@ -300,8 +374,13 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 break
             }
 
+            // Reset MagSafe LED to system default if available
+            if hasMagSafeLED {
+                try smc.writeKey("ACLC", bytes: [0x00])
+            }
+
             HelperState.clear()
-            log.info("Reset to defaults (charging enabled, discharge off)")
+            log.info("Reset to defaults (charging enabled, discharge off, LED default)")
         } catch {
             log.error("Failed to reset to defaults: \(error.localizedDescription)")
         }

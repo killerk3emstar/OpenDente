@@ -1,5 +1,13 @@
 import Foundation
 
+extension String {
+    /// Numeric-aware version comparison: "1.10.0" >= "1.2.0" returns true.
+    /// Uses Foundation's `.numeric` option so multi-digit components compare correctly.
+    func isVersionAtLeast(_ other: String) -> Bool {
+        self.compare(other, options: .numeric) != .orderedAscending
+    }
+}
+
 enum HelperConstants {
     /// Mach service name (must match launchd plist MachServices key and helper bundle ID)
     static let machServiceName = "com.opendente.helper"
@@ -26,8 +34,11 @@ enum HelperConstants {
     /// State file path (written atomically by helper)
     static let stateFilePath = "/Library/Application Support/OpenDente/helper-state"
 
-    /// Helper version
-    static let helperVersion = "1.0.0"
+    /// Helper version (bump when protocol changes)
+    static let helperVersion = "1.1.0"
+
+    /// Minimum helper version that supports MagSafe LED control (ACLC)
+    static let minVersionMagSafeLED = "1.1.0"
 
     /// Name of the launchd plist file (in app bundle Contents/Library/LaunchDaemons/)
     static let launchdPlistName = "com.opendente.helper.plist"
