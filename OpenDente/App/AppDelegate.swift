@@ -46,6 +46,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.updateStatusBarText() }
             .store(in: &cancellables)
+
+        // Notifications
+        NotificationService.shared.requestPermission()
+        setupNotifications()
+    }
+
+    private func setupNotifications() {
+        var previousMode: ChargingMode = charging.mode
+
+        charging.$mode
+            .receive(on: RunLoop.main)
+            .sink { [weak self] newMode in
+                guard let self else { return }
+                switch (previousMode, newMode) {
+                case (.charging, .paused), (.sailing, .paused):
+                    NotificationService.shared.send(.chargeLimitReached, settings: self.settings)
+                case (_, .heatProtection):
+                    NotificationService.shared.send(.heatProtection, settings: self.settings)
+                case (.discharging, .paused), (.discharging, .idle):
+                    NotificationService.shared.send(.dischargeComplete, settings: self.settings)
+                default:
+                    break
+                }
+                if newMode == .charging || newMode == .onBattery || newMode == .discharging {
+                    NotificationService.shared.clearLastEvent()
+                }
+                previousMode = newMode
+            }
+            .store(in: &cancellables)
+
+        battery.$batteryState
+            .receive(on: RunLoop.main)
+            .sink { [weak self] state in
+                guard let self else { return }
+                let pct = state.effectivePercentage(useHardware: self.settings.useHardwareBatteryPercentage)
+                if self.charging.mode == .topUp && pct >= 100 {
+                    NotificationService.shared.send(.topUpComplete, settings: self.settings)
+                }
+            }
+            .store(in: &cancellables)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -77,18 +117,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem?.button else { return }
 
         let state = battery.batteryState
+        let pct = state.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
 
-        let iconName = charging.mode.batteryIconName(percentage: state.percentage, isCharging: state.isCharging)
+        let iconName = charging.mode.batteryIconName(percentage: pct, isCharging: state.isCharging)
         if iconName != lastIconName {
             let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
-            button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Battery \(state.percentage)%")?.withSymbolConfiguration(config)
+            button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Battery \(pct)%")?.withSymbolConfiguration(config)
             lastIconName = iconName
         }
 
         var parts: [String] = []
 
         if settings.statusBarShowPercentage {
-            parts.append("\(state.percentage)%")
+            parts.append("\(pct)%")
         }
 
         if settings.statusBarShowTemperature, let temp = state.temperature {

@@ -6,6 +6,24 @@ struct PopoverView: View {
     @ObservedObject var charging = ChargingManager.shared
     @ObservedObject var settings = AppSettings.shared
 
+    private var displayPercentage: Int {
+        battery.batteryState.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
+    }
+
+    private var canDischarge: Bool {
+        Self.canDischarge(
+            isPluggedIn: battery.batteryState.isPluggedIn,
+            percentage: displayPercentage,
+            chargeLimit: settings.chargeLimit,
+            isHelperInstalled: charging.isHelperInstalled
+        )
+    }
+
+    /// Pure function for testability
+    static func canDischarge(isPluggedIn: Bool, percentage: Int, chargeLimit: Int, isHelperInstalled: Bool) -> Bool {
+        isPluggedIn && percentage > chargeLimit && isHelperInstalled
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -74,20 +92,40 @@ struct PopoverView: View {
 
             if charging.mode == .topUp {
                 Button(action: { charging.cancelTopUp() }) {
-                    Label("Cancel", systemImage: "xmark.circle")
-                        .font(.system(size: 12))
+                    Image(systemName: "xmark.circle")
+                        .font(.system(size: 14))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .tint(.red)
+                .help("Cancel Top Up")
+            } else if charging.mode == .discharging {
+                Button(action: { charging.stopDischarge() }) {
+                    Image(systemName: "stop.circle")
+                        .font(.system(size: 14))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(.red)
+                .help("Stop Discharge")
             } else {
                 Button(action: { charging.startTopUp() }) {
-                    Label("Top Up", systemImage: "arrow.up.to.line.circle")
-                        .font(.system(size: 12))
+                    Image(systemName: "arrow.up.to.line.circle")
+                        .font(.system(size: 14))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(!battery.batteryState.isPluggedIn)
+                .help("Top Up to 100%")
+
+                Button(action: { charging.startDischarge() }) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 14))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!canDischarge)
+                .help("Discharge to Limit")
             }
 
             Button(action: { openSettings() }) {
@@ -104,7 +142,7 @@ struct PopoverView: View {
     private var batteryBar: some View {
         GeometryReader { geometry in
             let width = geometry.size.width
-            let percentage = CGFloat(battery.batteryState.percentage) / 100.0
+            let percentage = CGFloat(displayPercentage) / 100.0
             let limitPosition = CGFloat(settings.chargeLimit) / 100.0
             let sailingLower = CGFloat(settings.sailingLowerBound) / 100.0
 
@@ -131,7 +169,7 @@ struct PopoverView: View {
                 HStack {
                     modeIcon
                         .font(.system(size: 11, weight: .bold))
-                    Text("\(battery.batteryState.percentage)%")
+                    Text("\(displayPercentage)%")
                         .font(.system(size: 12, weight: .semibold, design: .monospaced))
                 }
                 .foregroundStyle(percentage > 0.3 ? .white : .primary)
@@ -169,7 +207,7 @@ struct PopoverView: View {
         case .sailing:
             return .blue
         default:
-            if battery.batteryState.percentage <= 20 {
+            if displayPercentage <= 20 {
                 return .red
             }
             return .green
@@ -216,7 +254,7 @@ struct PopoverView: View {
         case .timeRemaining:
             return charging.mode.timeRemainingDisplay(
                 chargeLimit: settings.chargeLimit,
-                percentage: state.percentage,
+                percentage: displayPercentage,
                 timeToFull: state.timeToFull,
                 timeToEmpty: state.timeToEmpty
             )
@@ -236,8 +274,8 @@ struct PopoverView: View {
             guard let current = state.currentCapacity, let max = state.maxCapacity else { return nil }
             return ("Capacity", "\(current) / \(max) mAh")
         case .batteryPower:
-            guard let power = state.batteryPower, power > 0.1 else { return nil }
-            return ("Battery Power", String(format: "%.1f W", power))
+            guard let power = state.batteryPower, abs(power) > 0.1 else { return nil }
+            return ("Battery Power", String(format: "%.1f W", abs(power)))
         }
     }
 

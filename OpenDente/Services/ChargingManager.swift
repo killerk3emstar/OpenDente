@@ -52,7 +52,7 @@ final class ChargingManager: ObservableObject {
     var helperVersion: String?
 
     /// Last LED color sent to avoid duplicate XPC calls
-    private var lastLEDColor: UInt8?
+    private(set) var lastLEDColor: UInt8?
 
     /// Timestamp of last inhibit send — used to debounce verification re-sends.
     /// Internal for testability.
@@ -148,21 +148,21 @@ final class ChargingManager: ObservableObject {
 
     /// Evaluate battery state and decide charging mode. Internal for testability.
     func evaluateState(_ state: BatteryState) {
+        let pct = state.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
+
         // Skip evaluation if data looks uninitialized (startup race / IOKit not ready).
         // A Mac genuinely at 0% on battery would have timeToEmpty populated.
-        guard state.percentage > 0 || state.isCharging || state.isPluggedIn
+        guard pct > 0 || state.isCharging || state.isPluggedIn
               || state.timeToEmpty != nil || state.timeToFull != nil else {
             return  // Stay in current mode until real data arrives
         }
 
-        // Not plugged in = on battery, nothing to control
-        guard state.isPluggedIn else {
+        // Not plugged in = on battery, nothing to control.
+        // Exception: during force discharge, IOKit reports power source as "battery"
+        // even though the charger is physically connected. Don't kill our own discharge.
+        guard state.isPluggedIn || mode == .discharging else {
             if mode == .topUp {
                 log.info("Top Up ended: unplugged at \(state.percentage)%")
-            }
-            if mode == .discharging {
-                log.info("Discharge ended: unplugged at \(state.percentage)%")
-                forceDischarge(false)
             }
             mode = .onBattery
             return
@@ -199,7 +199,7 @@ final class ChargingManager: ObservableObject {
 
         // Top Up mode - charge to 100%
         if mode == .topUp {
-            if state.percentage >= 100 {
+            if pct >= 100 {
                 // Stay at 100% until unplugged (handled above)
             }
             return
@@ -212,8 +212,16 @@ final class ChargingManager: ObservableObject {
 
         // Discharge mode - don't override until unplugged (or auto-discharge reaches limit)
         if mode == .discharging {
-            if settings.automaticDischarge && state.percentage <= settings.chargeLimit {
-                log.info("Auto-discharge reached limit: \(state.percentage)% ≤ \(self.settings.chargeLimit)%")
+            // Real unplug detection: during force discharge, IOKit reports isPluggedIn=false.
+            // A real unplug is when isPluggedIn=false AND adapter power is gone.
+            if !state.isPluggedIn && (state.adapterPower ?? 0) < 0.1 {
+                log.info("Discharge ended: charger unplugged at \(pct)%")
+                forceDischarge(false)
+                mode = .onBattery
+                return
+            }
+            if settings.automaticDischarge && pct <= settings.chargeLimit {
+                log.info("Auto-discharge reached limit: \(pct)% ≤ \(self.settings.chargeLimit)%")
                 stopDischarge()
                 // Fall through to normal evaluation
             } else {
@@ -227,17 +235,17 @@ final class ChargingManager: ObservableObject {
         if settings.sailingModeEnabled {
             let lowerBound = settings.sailingLowerBound
 
-            if state.percentage >= limit {
+            if pct >= limit {
                 // At or above limit - pause charging
                 if mode != .paused {
-                    log.info("Limit reached: \(state.percentage)% ≥ \(limit)% → inhibiting")
+                    log.info("Limit reached: \(pct)% ≥ \(limit)% → inhibiting")
                     inhibitCharging()
                     mode = .paused
                 }
-            } else if state.percentage >= lowerBound {
+            } else if pct >= lowerBound {
                 // In sailing range — don't charge, coast on adapter power
                 if mode != .sailing {
-                    log.info("Sailing: \(state.percentage)% in range \(lowerBound)–\(limit)%")
+                    log.info("Sailing: \(pct)% in range \(lowerBound)–\(limit)%")
                     // Only send SMC write if charging isn't already inhibited
                     if mode != .paused {
                         inhibitCharging()
@@ -247,22 +255,22 @@ final class ChargingManager: ObservableObject {
             } else {
                 // Below sailing range — charge back up to limit
                 if mode != .charging {
-                    log.info("Below range: \(state.percentage)% < \(lowerBound)% → charging to \(limit)%")
+                    log.info("Below range: \(pct)% < \(lowerBound)% → charging to \(limit)%")
                     enableCharging()
                     mode = .charging
                 }
             }
         } else {
             // No sailing mode - simple limit
-            if state.percentage >= limit {
+            if pct >= limit {
                 if mode != .paused {
-                    log.info("Limit reached: \(state.percentage)% ≥ \(limit)% → inhibiting")
+                    log.info("Limit reached: \(pct)% ≥ \(limit)% → inhibiting")
                     inhibitCharging()
                     mode = .paused
                 }
             } else {
                 if mode != .charging {
-                    log.info("Below limit: \(state.percentage)% < \(limit)% → charging")
+                    log.info("Below limit: \(pct)% < \(limit)% → charging")
                     enableCharging()
                     mode = .charging
                 }
@@ -270,8 +278,8 @@ final class ChargingManager: ObservableObject {
         }
 
         // Automatic discharge: if battery > limit and auto-discharge is on
-        if settings.automaticDischarge && state.percentage > limit && mode == .paused {
-            log.info("Auto-discharge: \(state.percentage)% > \(limit)%")
+        if settings.automaticDischarge && pct > limit && mode == .paused {
+            log.info("Auto-discharge: \(pct)% > \(limit)%")
             startDischarge()
         }
 

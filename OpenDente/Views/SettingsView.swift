@@ -174,7 +174,7 @@ struct ChargingTab: View {
                         .foregroundStyle(.secondary)
                 }
                 Toggle("Stop Charging when Sleeping ★", isOn: $settings.stopChargingWhenSleeping)
-                Toggle("Use Hardware Battery Percentage ★", isOn: $settings.useHardwareBatteryPercentage)
+                Toggle("Use Hardware Battery Percentage", isOn: $settings.useHardwareBatteryPercentage)
 
                 Text("★ Not yet implemented — coming in a future update")
                     .font(.caption2)
@@ -229,14 +229,16 @@ struct StatusBarTab: View {
 
     private var statusBarIcon: String {
         let state = battery.batteryState
-        return charging.mode.batteryIconName(percentage: state.percentage, isCharging: state.isCharging)
+        let pct = state.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
+        return charging.mode.batteryIconName(percentage: pct, isCharging: state.isCharging)
     }
 
     private var statusBarPreview: String {
         let state = battery.batteryState
+        let pct = state.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
         var parts: [String] = []
         if settings.statusBarShowPercentage {
-            parts.append("\(state.percentage)%")
+            parts.append("\(pct)%")
         }
         if settings.statusBarShowTemperature, let temp = state.temperature {
             parts.append(String(format: "%.0f°", temp))
@@ -346,28 +348,22 @@ struct BatteryInfoTab: View {
     @ObservedObject var battery = BatteryService.shared
     @ObservedObject var charging = ChargingManager.shared
 
+    @ObservedObject var settings = AppSettings.shared
+
     var body: some View {
         let state = battery.batteryState
 
         Form {
-            Section("Status") {
-                infoRow("Mode", value: charging.mode.displayName)
-                infoRow("Power Source", value: state.powerSource)
-                infoRow("Percentage", value: "\(state.percentage)%")
-                if let temp = state.temperature {
-                    infoRow("Temperature", value: String(format: "%.1f°C", temp))
+            Section("Battery") {
+                infoRow("macOS Percentage", value: "\(state.percentage)%")
+                if let hw = state.hardwarePercentage {
+                    infoRow("Hardware SoC", value: "\(hw)%")
                 }
-            }
-
-            Section("Capacity") {
-                if let current = state.currentCapacity {
-                    infoRow("Current", value: "\(current) mAh")
-                }
-                if let max = state.maxCapacity {
-                    infoRow("Full Charge", value: "\(max) mAh")
+                if let current = state.currentCapacity, let max = state.maxCapacity {
+                    infoRow("Capacity", value: "\(current) / \(max) mAh")
                 }
                 if let design = state.designCapacity {
-                    infoRow("Design", value: "\(design) mAh")
+                    infoRow("Design Capacity", value: "\(design) mAh")
                 }
                 if let health = state.healthPercentage {
                     infoRow("Health", value: String(format: "%.1f%%", health))
@@ -375,14 +371,21 @@ struct BatteryInfoTab: View {
                 if let cycles = state.cycleCount {
                     infoRow("Cycle Count", value: "\(cycles)")
                 }
+                if let temp = state.temperature {
+                    infoRow("Temperature", value: String(format: "%.1f°C", temp))
+                }
             }
 
             Section("Power") {
+                infoRow("Source", value: state.powerSource)
                 if let voltage = state.voltage {
                     infoRow("Voltage", value: String(format: "%.2f V", voltage))
                 }
                 if let amperage = state.amperage {
                     infoRow("Current", value: String(format: "%.2f A", amperage))
+                }
+                if let power = state.batteryPower {
+                    infoRow("Battery Power", value: String(format: "%.1f W", abs(power)))
                 }
                 if let system = state.systemPower {
                     infoRow("System Power", value: String(format: "%.1f W", system))
@@ -392,9 +395,16 @@ struct BatteryInfoTab: View {
                 }
             }
 
-            Section("SMC") {
-                infoRow("SMC Available", value: battery.smcAvailable ? "Yes" : "No")
+            Section("Control") {
+                infoRow("Mode", value: charging.mode.displayName)
                 infoRow("Charging API", value: chargingAPIName)
+                if settings.controlMagSafeLED {
+                    infoRow("MagSafe LED", value: ledColorName)
+                }
+                infoRow("SMC Available", value: battery.smcAvailable ? "Yes" : "No")
+                if let version = charging.helperVersion {
+                    infoRow("Helper Version", value: version)
+                }
             }
         }
         .formStyle(.grouped)
@@ -405,6 +415,16 @@ struct BatteryInfoTab: View {
         case .legacy: return "Legacy (CH0B/CH0C)"
         case .tahoe:  return "Tahoe (CHTE/CHIE)"
         case .unknown: return "Not detected"
+        }
+    }
+
+    private var ledColorName: String {
+        switch charging.lastLEDColor {
+        case 0x00: return "Auto"
+        case 0x01: return "Off"
+        case 0x03: return "Green"
+        case 0x04: return "Orange"
+        default:   return charging.lastLEDColor.map { String(format: "0x%02X", $0) } ?? "–"
         }
     }
 

@@ -4,6 +4,7 @@ import Foundation
 struct BatteryState: Equatable {
     // MARK: - Core
     let percentage: Int              // 0-100 (macOS reported)
+    let hardwarePercentage: Int?     // Raw SoC from SMC (B0RM/B0FC)
     let isCharging: Bool
     let isPluggedIn: Bool
 
@@ -31,6 +32,12 @@ struct BatteryState: Equatable {
         return Double(max) / Double(design) * 100.0
     }
 
+    /// Returns hardware percentage if enabled and available, otherwise macOS percentage
+    func effectivePercentage(useHardware: Bool) -> Int {
+        if useHardware, let hw = hardwarePercentage { return hw }
+        return percentage
+    }
+
     var isOnBattery: Bool { !isPluggedIn }
 
     var powerSource: String {
@@ -45,7 +52,7 @@ struct BatteryState: Equatable {
     }
 
     static let unknown = BatteryState(
-        percentage: 0, isCharging: false, isPluggedIn: false,
+        percentage: 0, hardwarePercentage: nil, isCharging: false, isPluggedIn: false,
         currentCapacity: nil, maxCapacity: nil, designCapacity: nil, cycleCount: nil,
         temperature: nil, voltage: nil, amperage: nil,
         systemPower: nil, adapterPower: nil, batteryPower: nil,

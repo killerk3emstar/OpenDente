@@ -267,4 +267,33 @@ final class DisplayLogicTests: XCTestCase {
         let icon = ChargingMode.onBattery.batteryIconName(percentage: 50, isCharging: false)
         XCTAssertEqual(icon, "battery.50percent")
     }
+
+    // MARK: - canDischarge
+
+    func testCanDischarge_pluggedInAboveLimit_true() {
+        XCTAssertTrue(
+            PopoverView.canDischarge(isPluggedIn: true, percentage: 85, chargeLimit: 80, isHelperInstalled: true)
+        )
+    }
+
+    func testCanDischarge_notPluggedIn_false() {
+        XCTAssertFalse(
+            PopoverView.canDischarge(isPluggedIn: false, percentage: 85, chargeLimit: 80, isHelperInstalled: true)
+        )
+    }
+
+    func testCanDischarge_atOrBelowLimit_false() {
+        XCTAssertFalse(
+            PopoverView.canDischarge(isPluggedIn: true, percentage: 80, chargeLimit: 80, isHelperInstalled: true)
+        )
+        XCTAssertFalse(
+            PopoverView.canDischarge(isPluggedIn: true, percentage: 75, chargeLimit: 80, isHelperInstalled: true)
+        )
+    }
+
+    func testCanDischarge_noHelper_false() {
+        XCTAssertFalse(
+            PopoverView.canDischarge(isPluggedIn: true, percentage: 85, chargeLimit: 80, isHelperInstalled: false)
+        )
+    }
 }

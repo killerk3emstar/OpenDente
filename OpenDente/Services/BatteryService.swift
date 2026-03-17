@@ -68,11 +68,25 @@ final class BatteryService: ObservableObject {
         let ioKitState = readIOKitPowerSource()
         let smcState = smcAvailable ? readSMCData() : SMCData()
 
+        let hwPercent: Int? = {
+            guard let rem = smcState.remainingCapacity,
+                  let full = smcState.fullChargeCapacity,
+                  full > 0, rem >= 0
+            else { return nil }
+            // B0RM can slightly exceed B0FC due to measurement noise — clamp to 0-100.
+            // Reject obviously wrong values (e.g. byte-swapped garbage) to fall back to macOS %.
+            let ratio = Double(rem) / Double(full)
+            guard ratio <= 1.1 else { return nil }  // >110% means garbage data
+            return max(0, min(100, Int(round(ratio * 100.0))))
+        }()
+
         let state = BatteryState(
             percentage: ioKitState.percentage,
+            hardwarePercentage: hwPercent,
             isCharging: ioKitState.isCharging,
             isPluggedIn: ioKitState.isPluggedIn,
-            currentCapacity: smcState.fullChargeCapacity.map { $0 * ioKitState.percentage / 100 },
+            // Use B0RM for currentCapacity only when hardware % is valid (same sanity checks)
+            currentCapacity: hwPercent != nil ? smcState.remainingCapacity : smcState.fullChargeCapacity.map { $0 * ioKitState.percentage / 100 },
             maxCapacity: smcState.fullChargeCapacity,
             designCapacity: smcState.designCapacity,
             cycleCount: smcState.cycleCount ?? ioKitState.cycleCount,
@@ -146,6 +160,7 @@ final class BatteryService: ObservableObject {
         var adapterPower: Double?
         var batteryPower: Double?
         var cycleCount: Int?
+        var remainingCapacity: Int?
         var fullChargeCapacity: Int?
         var designCapacity: Int?
     }
@@ -209,7 +224,10 @@ final class BatteryService: ObservableObject {
             data.cycleCount = Int(raw)
         }
 
-        // Capacity (B0RM byte order is unreliable, compute remaining from percentage)
+        // Capacity — B0RM uses reverse (big-endian) byte order per Asahi Linux docs
+        if let val = smc.readKeyOptional("B0RM"), let raw = val.uint16BigEndian {
+            data.remainingCapacity = Int(raw)
+        }
         if let raw = smc.readUInt16("B0FC") {
             data.fullChargeCapacity = Int(raw)
         }
@@ -264,7 +282,8 @@ final class BatteryService: ObservableObject {
         }
 
         // Near the charge limit (within ±3%)
-        let nearLimit = abs(state.percentage - settings.chargeLimit) <= 3
+        let pct = state.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
+        let nearLimit = abs(pct - settings.chargeLimit) <= 3
         if nearLimit && state.isCharging {
             return 3
         }

@@ -70,14 +70,17 @@ final class MockChargingControl: ChargingControl, @unchecked Sendable {
 /// Plugged in by default because that's when charging control is active.
 func makeBatteryState(
     percentage: Int = 50,
+    hardwarePercentage: Int? = nil,
     isCharging: Bool = false,
     isPluggedIn: Bool = true,
     temperature: Double? = 25.0,
+    adapterPower: Double? = nil,
     timeToEmpty: Int? = nil,
     timeToFull: Int? = nil
 ) -> BatteryState {
     BatteryState(
         percentage: percentage,
+        hardwarePercentage: hardwarePercentage,
         isCharging: isCharging,
         isPluggedIn: isPluggedIn,
         currentCapacity: nil,
@@ -88,7 +91,7 @@ func makeBatteryState(
         voltage: nil,
         amperage: nil,
         systemPower: nil,
-        adapterPower: nil,
+        adapterPower: adapterPower,
         batteryPower: nil,
         timeToEmpty: timeToEmpty,
         timeToFull: timeToFull
@@ -118,6 +121,7 @@ final class ChargingManagerTests: XCTestCase {
         settings.heatProtectionEnabled = false
         settings.automaticDischarge = false
         settings.controlMagSafeLED = false  // Prevent LED calls from polluting existing tests
+        settings.useHardwareBatteryPercentage = false
     }
 
     override func tearDown() {
@@ -129,6 +133,7 @@ final class ChargingManagerTests: XCTestCase {
         settings.automaticDischarge = false
         settings.controlMagSafeLED = true
         settings.magSafeLEDOffWhenInactive = false
+        settings.useHardwareBatteryPercentage = false
         manager = nil
         mock = nil
         super.tearDown()
@@ -372,22 +377,34 @@ final class ChargingManagerTests: XCTestCase {
         XCTAssertEqual(manager.mode, .discharging)
     }
 
-    func testDischarge_endsOnUnplug() {
+    func testDischarge_endsOnRealUnplug() {
         manager.startDischarge()
         mock.reset()
 
-        manager.evaluateState(makeBatteryState(percentage: 70, isPluggedIn: false))
+        // Real unplug: isPluggedIn=false AND adapterPower=0
+        manager.evaluateState(makeBatteryState(percentage: 70, isPluggedIn: false, adapterPower: 0))
         XCTAssertEqual(manager.mode, .onBattery)
         XCTAssertEqual(mock.calls, [.forceDischarge(enable: false)],
-            "Unplug during discharge must clear discharge key (CH0I)")
+            "Real unplug during discharge must clear discharge key (CH0I)")
+    }
+
+    func testDischarge_survivesIOKitFlicker() {
+        // During force discharge, IOKit reports isPluggedIn=false but adapter is still connected
+        manager.startDischarge()
+        mock.reset()
+
+        manager.evaluateState(makeBatteryState(percentage: 85, isPluggedIn: false, adapterPower: 30.0))
+        XCTAssertEqual(manager.mode, .discharging,
+            "Discharge must survive IOKit isPluggedIn flicker when adapter power is present")
+        XCTAssertTrue(mock.calls.isEmpty, "No SMC writes during IOKit flicker")
     }
 
     func testDischarge_unplugAndReplug_noStaleDischargeKey() {
         manager.startDischarge()
         mock.reset()
 
-        // Unplug — should clear discharge key
-        manager.evaluateState(makeBatteryState(percentage: 50, isPluggedIn: false))
+        // Real unplug — should clear discharge key
+        manager.evaluateState(makeBatteryState(percentage: 50, isPluggedIn: false, adapterPower: 0))
         XCTAssertEqual(manager.mode, .onBattery)
         mock.reset()
 
@@ -1136,6 +1153,50 @@ final class ChargingManagerTests: XCTestCase {
             if case .setMagSafeLED = $0 { return true }
             return false
         }), "Version 1.10.0 >= 1.1.0 — LED calls must be made (semantic compare)")
+    }
+
+    // =========================================================================
+    // MARK: - Hardware Battery Percentage
+    // =========================================================================
+
+    func testHardwarePercentage_usedForLimitComparison() {
+        // macOS=78%, hw=81%, limit=80% → hw says above limit → paused
+        settings.useHardwareBatteryPercentage = true
+        manager.evaluateState(makeBatteryState(percentage: 78, hardwarePercentage: 81))
+        XCTAssertEqual(manager.mode, .paused, "Hardware % above limit should pause")
+    }
+
+    func testHardwarePercentage_settingDisabled_usesMacOS() {
+        // Same data but setting off → macOS 78% < 80% → charging
+        settings.useHardwareBatteryPercentage = false
+        manager.evaluateState(makeBatteryState(percentage: 78, hardwarePercentage: 81))
+        XCTAssertEqual(manager.mode, .charging, "With HW% disabled, macOS % below limit should charge")
+    }
+
+    func testHardwarePercentage_sailingRangeUsesHardware() {
+        settings.useHardwareBatteryPercentage = true
+        settings.sailingModeEnabled = true
+        settings.chargeLimit = 80
+        settings.sailingRange = 10  // lower bound = 70
+
+        // macOS=68%, hw=72% → hw is in sailing range (70-80)
+        manager.evaluateState(makeBatteryState(percentage: 68, hardwarePercentage: 72))
+        XCTAssertEqual(manager.mode, .sailing, "Hardware % in sailing range should sail")
+    }
+
+    func testHardwarePercentage_autoDischargeUsesHardware() {
+        settings.useHardwareBatteryPercentage = true
+        settings.automaticDischarge = true
+        settings.chargeLimit = 80
+
+        // Start discharge: hw=85% > 80% → auto-discharge starts
+        manager.evaluateState(makeBatteryState(percentage: 78, hardwarePercentage: 85))
+        XCTAssertEqual(manager.mode, .discharging, "Auto-discharge should trigger based on hw%")
+
+        // Discharge reaches limit: hw=80% <= 80% → stops
+        mock.clearCalls()
+        manager.evaluateState(makeBatteryState(percentage: 76, hardwarePercentage: 80))
+        XCTAssertNotEqual(manager.mode, .discharging, "Auto-discharge should stop when hw% reaches limit")
     }
 }
 

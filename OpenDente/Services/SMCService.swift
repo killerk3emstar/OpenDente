@@ -83,6 +83,12 @@ struct SMCValue {
         return UInt16(bytes[1]) << 8 | UInt16(bytes[0])
     }
 
+    /// Big-endian read for keys that use reverse byte order (e.g. B0RM)
+    var uint16BigEndian: UInt16? {
+        guard dataSize >= 2 else { return nil }
+        return UInt16(bytes[0]) << 8 | UInt16(bytes[1])
+    }
+
     var int16Value: Int16? {
         guard let u = uint16Value else { return nil }
         return Int16(bitPattern: u)
