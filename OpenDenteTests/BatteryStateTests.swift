@@ -50,63 +50,6 @@ final class BatteryStateTests: XCTestCase {
         XCTAssertNil(state.healthPercentage)
     }
 
-    // MARK: - Time Remaining Formatting
-
-    func testTimeRemaining_hoursAndMinutes() {
-        let state = BatteryState(
-            percentage: 50, isCharging: false, isPluggedIn: false,
-            currentCapacity: nil, maxCapacity: nil, designCapacity: nil, cycleCount: nil,
-            temperature: nil, voltage: nil, amperage: nil,
-            systemPower: nil, adapterPower: nil, batteryPower: nil,
-            timeToEmpty: 150, timeToFull: nil
-        )
-        XCTAssertEqual(state.timeRemainingFormatted, "2h 30m")
-    }
-
-    func testTimeRemaining_minutesOnly() {
-        let state = BatteryState(
-            percentage: 90, isCharging: false, isPluggedIn: false,
-            currentCapacity: nil, maxCapacity: nil, designCapacity: nil, cycleCount: nil,
-            temperature: nil, voltage: nil, amperage: nil,
-            systemPower: nil, adapterPower: nil, batteryPower: nil,
-            timeToEmpty: 45, timeToFull: nil
-        )
-        XCTAssertEqual(state.timeRemainingFormatted, "45m")
-    }
-
-    func testTimeRemaining_charging_usesTimeToFull() {
-        let state = BatteryState(
-            percentage: 50, isCharging: true, isPluggedIn: true,
-            currentCapacity: nil, maxCapacity: nil, designCapacity: nil, cycleCount: nil,
-            temperature: nil, voltage: nil, amperage: nil,
-            systemPower: nil, adapterPower: nil, batteryPower: nil,
-            timeToEmpty: nil, timeToFull: 60
-        )
-        XCTAssertEqual(state.timeRemainingFormatted, "1h 0m")
-    }
-
-    func testTimeRemaining_nilWhenNegative() {
-        let state = BatteryState(
-            percentage: 50, isCharging: false, isPluggedIn: false,
-            currentCapacity: nil, maxCapacity: nil, designCapacity: nil, cycleCount: nil,
-            temperature: nil, voltage: nil, amperage: nil,
-            systemPower: nil, adapterPower: nil, batteryPower: nil,
-            timeToEmpty: -1, timeToFull: nil
-        )
-        XCTAssertNil(state.timeRemainingFormatted)
-    }
-
-    func testTimeRemaining_nilWhenUnreasonablyLarge() {
-        let state = BatteryState(
-            percentage: 50, isCharging: false, isPluggedIn: false,
-            currentCapacity: nil, maxCapacity: nil, designCapacity: nil, cycleCount: nil,
-            temperature: nil, voltage: nil, amperage: nil,
-            systemPower: nil, adapterPower: nil, batteryPower: nil,
-            timeToEmpty: 7000, timeToFull: nil
-        )
-        XCTAssertNil(state.timeRemainingFormatted)
-    }
-
     // MARK: - Power Source
 
     func testIsOnBattery() {

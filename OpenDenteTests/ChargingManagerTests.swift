@@ -11,10 +11,13 @@ final class MockChargingControl: ChargingControl, @unchecked Sendable {
         case inhibitCharging
         case forceDischarge(enable: Bool)
         case resetToDefaults
+        case setMagSafeLED(color: UInt8)
     }
 
     /// All calls in order — use this to verify exact sequences of SMC operations
     private(set) var calls: [Call] = []
+
+    func clearCalls() { calls.removeAll() }
 
     /// If true, completion reports failure (simulates helper crash/disconnect)
     var shouldFail = false
@@ -51,6 +54,11 @@ final class MockChargingControl: ChargingControl, @unchecked Sendable {
         completion?(true, nil)
     }
 
+    func setMagSafeLED(color: UInt8, completion: (@Sendable (Bool, String?) -> Void)?) {
+        calls.append(.setMagSafeLED(color: color))
+        completion?(true, nil)
+    }
+
     nonisolated func resetToDefaultsSync(timeout: TimeInterval) {}
 
     func reset() { calls.removeAll() }
@@ -64,7 +72,9 @@ func makeBatteryState(
     percentage: Int = 50,
     isCharging: Bool = false,
     isPluggedIn: Bool = true,
-    temperature: Double? = 25.0
+    temperature: Double? = 25.0,
+    timeToEmpty: Int? = nil,
+    timeToFull: Int? = nil
 ) -> BatteryState {
     BatteryState(
         percentage: percentage,
@@ -80,8 +90,8 @@ func makeBatteryState(
         systemPower: nil,
         adapterPower: nil,
         batteryPower: nil,
-        timeToEmpty: nil,
-        timeToFull: nil
+        timeToEmpty: timeToEmpty,
+        timeToFull: timeToFull
     )
 }
 
@@ -100,12 +110,14 @@ final class ChargingManagerTests: XCTestCase {
         mock = MockChargingControl()
         manager = ChargingManager(settings: settings, helper: mock, battery: .shared)
         manager.chargingAPI = .legacy
+        manager.isHelperInstalled = true
 
         // Known defaults for deterministic tests
         settings.chargeLimit = 80
         settings.sailingModeEnabled = false
         settings.heatProtectionEnabled = false
         settings.automaticDischarge = false
+        settings.controlMagSafeLED = false  // Prevent LED calls from polluting existing tests
     }
 
     override func tearDown() {
@@ -115,6 +127,8 @@ final class ChargingManagerTests: XCTestCase {
         settings.heatProtectionEnabled = true
         settings.heatProtectionTemp = 35.0
         settings.automaticDischarge = false
+        settings.controlMagSafeLED = true
+        settings.magSafeLEDOffWhenInactive = false
         manager = nil
         mock = nil
         super.tearDown()
@@ -360,8 +374,28 @@ final class ChargingManagerTests: XCTestCase {
 
     func testDischarge_endsOnUnplug() {
         manager.startDischarge()
+        mock.reset()
+
         manager.evaluateState(makeBatteryState(percentage: 70, isPluggedIn: false))
         XCTAssertEqual(manager.mode, .onBattery)
+        XCTAssertEqual(mock.calls, [.forceDischarge(enable: false)],
+            "Unplug during discharge must clear discharge key (CH0I)")
+    }
+
+    func testDischarge_unplugAndReplug_noStaleDischargeKey() {
+        manager.startDischarge()
+        mock.reset()
+
+        // Unplug — should clear discharge key
+        manager.evaluateState(makeBatteryState(percentage: 50, isPluggedIn: false))
+        XCTAssertEqual(manager.mode, .onBattery)
+        mock.reset()
+
+        // Plug back in — should charge normally, not discharge
+        manager.evaluateState(makeBatteryState(percentage: 50))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertEqual(mock.calls, [.enableCharging],
+            "After replug, should charge — no stale discharge state")
     }
 
     func testDischarge_stopDischarge_returnsToIdle() {
@@ -485,6 +519,24 @@ final class ChargingManagerTests: XCTestCase {
 
         manager.evaluateState(makeBatteryState(percentage: 50, temperature: 36.0))
         XCTAssertEqual(manager.mode, .heatProtection)
+    }
+
+    func testPriority_heatProtectionOverridesDischarge_stopsDischargeKey() {
+        settings.heatProtectionEnabled = true
+        settings.heatProtectionTemp = 35.0
+
+        // Start discharge
+        manager.startDischarge()
+        XCTAssertEqual(manager.mode, .discharging)
+        mock.reset()
+
+        // Heat spike — should stop discharge AND inhibit charging
+        manager.evaluateState(makeBatteryState(percentage: 50, temperature: 36.0))
+        XCTAssertEqual(manager.mode, .heatProtection)
+        XCTAssertTrue(mock.calls.contains(.forceDischarge(enable: false)),
+            "Heat protection must clear discharge key — battery should be idle, not draining")
+        XCTAssertTrue(mock.calls.contains(.inhibitCharging),
+            "Heat protection must also inhibit charging")
     }
 
     func testPriority_topUpNotOverriddenByLimit() {
@@ -670,6 +722,51 @@ final class ChargingManagerTests: XCTestCase {
         XCTAssertFalse(mock.calls.contains(.forceDischarge(enable: true)))
     }
 
+    func testAutoDischarge_stopsAtLimit() {
+        settings.automaticDischarge = true
+
+        // Trigger auto-discharge at 85%
+        manager.evaluateState(makeBatteryState(percentage: 85))
+        XCTAssertEqual(manager.mode, .discharging)
+        mock.reset()
+
+        // Battery reaches limit — auto-discharge should stop
+        manager.evaluateState(makeBatteryState(percentage: 80))
+        XCTAssertTrue(mock.calls.contains(.forceDischarge(enable: false)),
+            "Auto-discharge must stop when limit is reached")
+        XCTAssertEqual(manager.mode, .paused,
+            "After auto-discharge stops at limit, should enter paused mode")
+    }
+
+    func testAutoDischarge_stopsBelowLimit() {
+        settings.automaticDischarge = true
+
+        manager.evaluateState(makeBatteryState(percentage: 85))
+        XCTAssertEqual(manager.mode, .discharging)
+        mock.reset()
+
+        // Battery overshoots below limit
+        manager.evaluateState(makeBatteryState(percentage: 75))
+        XCTAssertTrue(mock.calls.contains(.forceDischarge(enable: false)),
+            "Auto-discharge must stop when below limit")
+        XCTAssertEqual(manager.mode, .charging,
+            "After auto-discharge stops below limit, should charge back up")
+    }
+
+    func testManualDischarge_doesNotAutoStop() {
+        settings.automaticDischarge = false
+
+        manager.startDischarge()
+        XCTAssertEqual(manager.mode, .discharging)
+        mock.reset()
+
+        // At limit — manual discharge should NOT stop
+        manager.evaluateState(makeBatteryState(percentage: 80))
+        XCTAssertEqual(manager.mode, .discharging,
+            "Manual discharge must not auto-stop at limit")
+        XCTAssertFalse(mock.calls.contains(.forceDischarge(enable: false)))
+    }
+
     // =========================================================================
     // MARK: - Charge Limit Changes
     // =========================================================================
@@ -826,5 +923,252 @@ final class ChargingManagerTests: XCTestCase {
         manager.heatProtectionTimer = Date().addingTimeInterval(-301)
         manager.evaluateState(makeBatteryState(percentage: 60, temperature: 33.0))
         XCTAssertEqual(manager.mode, .charging, "Should resume charging after cooldown")
+    }
+
+    // =========================================================================
+    // MARK: - Startup Guard (uninitialized data)
+    // =========================================================================
+
+    func testStartupGuard_uninitializedData_staysIdle() {
+        // BatteryState.unknown: percentage=0, isPluggedIn=false, isCharging=false,
+        // timeToEmpty=nil, timeToFull=nil — all sentinel values
+        manager.evaluateState(.unknown)
+        XCTAssertEqual(manager.mode, .idle,
+            "Uninitialized data must not change mode from .idle")
+        XCTAssertTrue(mock.calls.isEmpty,
+            "No SMC calls on uninitialized data")
+    }
+
+    func testStartupGuard_zeroPercentWithTimeToEmpty_evaluatesNormally() {
+        // A Mac genuinely at 0% on battery would have timeToEmpty populated
+        let state = makeBatteryState(
+            percentage: 0, isPluggedIn: false, temperature: nil, timeToEmpty: 5
+        )
+        manager.evaluateState(state)
+        XCTAssertEqual(manager.mode, .onBattery,
+            "Real zero-percent data with timeToEmpty should evaluate normally")
+    }
+
+    func testStartupGuard_pluggedInAtZero_evaluatesNormally() {
+        // isPluggedIn=true passes the guard even at 0%
+        let state = makeBatteryState(percentage: 0, isPluggedIn: true)
+        manager.evaluateState(state)
+        XCTAssertEqual(manager.mode, .charging,
+            "Plugged in at 0% should pass guard and start charging")
+    }
+
+    func testStartupGuard_chargingAtZero_evaluatesNormally() {
+        // isCharging=true passes the guard even at 0%
+        let state = makeBatteryState(percentage: 0, isCharging: true, isPluggedIn: true)
+        manager.evaluateState(state)
+        XCTAssertEqual(manager.mode, .charging)
+    }
+
+    // =========================================================================
+    // MARK: - Charging Verification (system as source of truth)
+
+    func testVerification_pausedButStillCharging_resendsInhibit() {
+        // First evaluation: 90% >= 80% limit → inhibit → paused
+        manager.evaluateState(makeBatteryState(percentage: 90))
+        XCTAssertEqual(manager.mode, .paused)
+        let firstInhibitCount = mock.calls.filter { $0 == .inhibitCharging }.count
+        XCTAssertEqual(firstInhibitCount, 1)
+
+        // Simulate 6 seconds passing (past the 5s debounce)
+        manager.lastInhibitTime = Date().addingTimeInterval(-6)
+        mock.clearCalls()
+        manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        XCTAssertEqual(manager.mode, .paused)
+        let reInhibitCount = mock.calls.filter { $0 == .inhibitCharging }.count
+        XCTAssertEqual(reInhibitCount, 1, "Should re-send inhibit when system still reports charging")
+    }
+
+    func testVerification_pausedAndNotCharging_doesNotResend() {
+        // First evaluation: inhibit
+        manager.evaluateState(makeBatteryState(percentage: 90))
+        XCTAssertEqual(manager.mode, .paused)
+
+        // Second evaluation: isCharging=false → no re-send needed
+        mock.clearCalls()
+        manager.evaluateState(makeBatteryState(percentage: 90, isCharging: false))
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertTrue(mock.calls.filter { $0 == .inhibitCharging }.isEmpty,
+            "Should NOT re-send inhibit when system confirms not charging")
+    }
+
+    func testVerification_sailingButStillCharging_resendsInhibit() {
+        settings.sailingModeEnabled = true
+        settings.sailingRange = 10
+
+        manager.evaluateState(makeBatteryState(percentage: 75))
+        XCTAssertEqual(manager.mode, .sailing)
+
+        manager.lastInhibitTime = Date().addingTimeInterval(-6)
+        mock.clearCalls()
+        manager.evaluateState(makeBatteryState(percentage: 75, isCharging: true))
+        XCTAssertEqual(manager.mode, .sailing)
+        let reInhibitCount = mock.calls.filter { $0 == .inhibitCharging }.count
+        XCTAssertEqual(reInhibitCount, 1, "Should re-send inhibit when system still reports charging in sailing mode")
+    }
+
+    // =========================================================================
+    // MARK: - MagSafe LED
+    // =========================================================================
+
+    func testMagSafeLED_chargingMode_sendsOrange() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = HelperConstants.helperVersion
+        manager.evaluateState(makeBatteryState(percentage: 50))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x04)),
+            "Charging mode should set LED to orange (0x04)")
+    }
+
+    func testMagSafeLED_pausedMode_sendsGreen() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = HelperConstants.helperVersion
+        manager.evaluateState(makeBatteryState(percentage: 80))
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x03)),
+            "Paused mode should set LED to green (0x03)")
+    }
+
+    func testMagSafeLED_onBattery_sendsDefault() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = HelperConstants.helperVersion
+        manager.evaluateState(makeBatteryState(percentage: 50, isPluggedIn: false))
+        XCTAssertEqual(manager.mode, .onBattery)
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x00)),
+            "On battery should set LED to system default (0x00)")
+    }
+
+    func testMagSafeLED_disabled_noCalls() {
+        settings.controlMagSafeLED = false
+        manager.helperVersion = HelperConstants.helperVersion
+        manager.evaluateState(makeBatteryState(percentage: 50))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertFalse(mock.calls.contains(where: {
+            if case .setMagSafeLED = $0 { return true }
+            return false
+        }), "LED control disabled — no setMagSafeLED calls")
+    }
+
+    func testMagSafeLED_topUp_sendsOrange() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = HelperConstants.helperVersion
+        manager.startTopUp()
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x04)),
+            "Top Up mode should set LED to orange")
+    }
+
+    func testMagSafeLED_sailing_sendsGreen() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = HelperConstants.helperVersion
+        settings.sailingModeEnabled = true
+        settings.sailingRange = 10
+
+        manager.evaluateState(makeBatteryState(percentage: 75))
+        XCTAssertEqual(manager.mode, .sailing)
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x03)),
+            "Sailing mode should set LED to green (0x03)")
+    }
+
+    func testMagSafeLED_pausedMode_offWhenInactive() {
+        settings.controlMagSafeLED = true
+        settings.magSafeLEDOffWhenInactive = true
+        manager.helperVersion = HelperConstants.helperVersion
+        manager.evaluateState(makeBatteryState(percentage: 80))
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x01)),
+            "Paused mode with offWhenInactive should set LED off (0x01)")
+    }
+
+    func testMagSafeLED_sailing_offWhenInactive() {
+        settings.controlMagSafeLED = true
+        settings.magSafeLEDOffWhenInactive = true
+        manager.helperVersion = HelperConstants.helperVersion
+        settings.sailingModeEnabled = true
+        settings.sailingRange = 10
+
+        manager.evaluateState(makeBatteryState(percentage: 75))
+        XCTAssertEqual(manager.mode, .sailing)
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x01)),
+            "Sailing mode with offWhenInactive should set LED off (0x01)")
+    }
+
+    func testMagSafeLED_discharging_sendsOrange() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = HelperConstants.helperVersion
+        manager.startDischarge()
+        XCTAssertEqual(manager.mode, .discharging)
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x04)),
+            "Discharging mode should set LED to orange (0x04)")
+    }
+
+    func testMagSafeLED_oldHelper_noCalls() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = "1.0.0"  // Old helper without LED support
+        manager.evaluateState(makeBatteryState(percentage: 50))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertFalse(mock.calls.contains(where: {
+            if case .setMagSafeLED = $0 { return true }
+            return false
+        }), "Old helper (1.0.0) must not receive setMagSafeLED calls")
+    }
+
+    func testMagSafeLED_noHelperVersion_noCalls() {
+        settings.controlMagSafeLED = true
+        // helperVersion is nil (not yet queried)
+        manager.evaluateState(makeBatteryState(percentage: 50))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertFalse(mock.calls.contains(where: {
+            if case .setMagSafeLED = $0 { return true }
+            return false
+        }), "Before version is known, no LED calls should be made")
+    }
+
+    func testMagSafeLED_multiDigitVersion_sendsLED() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = "1.10.0"  // Would fail with lexicographic string compare
+        manager.evaluateState(makeBatteryState(percentage: 50))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertTrue(mock.calls.contains(where: {
+            if case .setMagSafeLED = $0 { return true }
+            return false
+        }), "Version 1.10.0 >= 1.1.0 — LED calls must be made (semantic compare)")
+    }
+}
+
+// MARK: - Version Comparison Tests
+
+final class VersionComparisonTests: XCTestCase {
+
+    func testEqual() {
+        XCTAssertTrue("1.1.0".isVersionAtLeast("1.1.0"))
+    }
+
+    func testHigherMinor() {
+        XCTAssertTrue("1.2.0".isVersionAtLeast("1.1.0"))
+    }
+
+    func testMultiDigitMinor() {
+        XCTAssertTrue("1.10.0".isVersionAtLeast("1.2.0"),
+            "Numeric compare: 10 > 2, must not use lexicographic")
+    }
+
+    func testHigherMajor() {
+        XCTAssertTrue("2.0.0".isVersionAtLeast("1.99.0"))
+    }
+
+    func testLowerVersion() {
+        XCTAssertFalse("1.0.0".isVersionAtLeast("1.1.0"))
+    }
+
+    func testMuchLowerVersion() {
+        XCTAssertFalse("0.9.0".isVersionAtLeast("1.0.0"))
+    }
+
+    func testHigherPatch() {
+        XCTAssertTrue("1.1.1".isVersionAtLeast("1.1.0"))
     }
 }
