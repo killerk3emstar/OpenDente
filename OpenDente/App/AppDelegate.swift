@@ -21,9 +21,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - App Lifecycle
 
+    /// True when the app is launched as a test host by Xcode.
+    /// In that case we must NOT start real services — the test host runs with
+    /// default settings and would send real SMC commands (e.g. enableCharging)
+    /// that conflict with the user's running app instance.
+    private static var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.instance = self
         NSApp.setActivationPolicy(.accessory)
+
+        guard !Self.isRunningTests else { return }
 
         battery.start()
         charging.start()
