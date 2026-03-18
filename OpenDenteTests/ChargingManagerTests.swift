@@ -358,15 +358,39 @@ final class ChargingManagerTests: XCTestCase {
     // User-initiated discharge must be respected by the state machine.
     // Before the fix, evaluateState would immediately override discharge mode.
 
-    func testDischarge_notOverriddenByEvaluateState() {
+    func testDischarge_notOverriddenWhileAboveLimit() {
         manager.startDischarge()
         XCTAssertEqual(manager.mode, .discharging)
         mock.reset()
 
-        manager.evaluateState(makeBatteryState(percentage: 50))
+        // Still above limit — discharge must continue
+        manager.evaluateState(makeBatteryState(percentage: 85))
         XCTAssertEqual(manager.mode, .discharging,
-            "REGRESSION: Discharge must not be overridden by state machine")
+            "REGRESSION: Discharge must not be overridden while above limit")
         XCTAssertTrue(mock.calls.isEmpty)
+    }
+
+    func testDischarge_stopsAtLimit() {
+        manager.startDischarge()
+        XCTAssertEqual(manager.mode, .discharging)
+        mock.reset()
+
+        // At limit — discharge must stop
+        manager.evaluateState(makeBatteryState(percentage: 80))
+        XCTAssertNotEqual(manager.mode, .discharging,
+            "Discharge must stop when reaching the charge limit")
+        XCTAssertTrue(mock.calls.contains(.forceDischarge(enable: false)))
+    }
+
+    func testDischarge_stopsBelowLimit() {
+        manager.startDischarge()
+        XCTAssertEqual(manager.mode, .discharging)
+        mock.reset()
+
+        // Below limit — discharge must stop
+        manager.evaluateState(makeBatteryState(percentage: 50))
+        XCTAssertNotEqual(manager.mode, .discharging,
+            "Discharge must stop when below the charge limit")
     }
 
     func testDischarge_notOverriddenEvenAboveLimit() {
@@ -770,18 +794,24 @@ final class ChargingManagerTests: XCTestCase {
             "After auto-discharge stops below limit, should charge back up")
     }
 
-    func testManualDischarge_doesNotAutoStop() {
+    func testManualDischarge_stopsAtLimit() {
         settings.automaticDischarge = false
 
         manager.startDischarge()
         XCTAssertEqual(manager.mode, .discharging)
         mock.reset()
 
-        // At limit — manual discharge should NOT stop
-        manager.evaluateState(makeBatteryState(percentage: 80))
+        // Above limit — discharge continues
+        manager.evaluateState(makeBatteryState(percentage: 81))
         XCTAssertEqual(manager.mode, .discharging,
-            "Manual discharge must not auto-stop at limit")
-        XCTAssertFalse(mock.calls.contains(.forceDischarge(enable: false)))
+            "Discharge should continue while above limit")
+
+        // At limit — discharge must stop (manual or auto, doesn't matter)
+        manager.evaluateState(makeBatteryState(percentage: 80))
+        XCTAssertNotEqual(manager.mode, .discharging,
+            "Discharge must stop when reaching the charge limit")
+        XCTAssertTrue(mock.calls.contains(.forceDischarge(enable: false)),
+            "Must send forceDischarge(false) when limit is reached")
     }
 
     // =========================================================================

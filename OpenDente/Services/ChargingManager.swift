@@ -255,8 +255,8 @@ final class ChargingManager: ObservableObject {
                 mode = .onBattery
                 return
             }
-            if settings.automaticDischarge && pct <= settings.chargeLimit {
-                log.info("Auto-discharge reached limit: \(pct)% ≤ \(self.settings.chargeLimit)%")
+            if pct <= settings.chargeLimit {
+                log.info("Discharge reached limit: \(pct)% ≤ \(self.settings.chargeLimit)%")
                 stopDischarge()
                 // Fall through to normal evaluation
             } else {
