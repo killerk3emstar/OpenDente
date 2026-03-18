@@ -15,13 +15,14 @@ struct PopoverView: View {
             isPluggedIn: battery.batteryState.isPluggedIn,
             percentage: displayPercentage,
             chargeLimit: settings.chargeLimit,
-            isHelperInstalled: charging.isHelperInstalled
+            isHelperInstalled: charging.isHelperInstalled,
+            chargingAPI: charging.chargingAPI
         )
     }
 
     /// Pure function for testability
-    static func canDischarge(isPluggedIn: Bool, percentage: Int, chargeLimit: Int, isHelperInstalled: Bool) -> Bool {
-        isPluggedIn && percentage > chargeLimit && isHelperInstalled
+    static func canDischarge(isPluggedIn: Bool, percentage: Int, chargeLimit: Int, isHelperInstalled: Bool, chargingAPI: SMCChargingAPI) -> Bool {
+        isPluggedIn && percentage > chargeLimit && isHelperInstalled && chargingAPI != .unknown
     }
 
     var body: some View {
@@ -115,7 +116,7 @@ struct PopoverView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(!battery.batteryState.isPluggedIn)
+                .disabled(!battery.batteryState.isPluggedIn || !charging.isHelperInstalled || charging.chargingAPI == .unknown)
                 .help("Top Up to 100%")
 
                 Button(action: { charging.startDischarge() }) {
@@ -275,7 +276,7 @@ struct PopoverView: View {
             return ("Capacity", "\(current) / \(max) mAh")
         case .batteryPower:
             guard let power = state.batteryPower, abs(power) > 0.1 else { return nil }
-            return ("Battery Power", String(format: "%.1f W", abs(power)))
+            return ("Battery Power", String(format: "%.1f W", power))
         }
     }
 
@@ -314,7 +315,6 @@ struct PopoverView: View {
             Spacer()
 
             Button("Quit") {
-                ChargingManager.shared.resetToDefaults()
                 NSApplication.shared.terminate(nil)
             }
             .buttonStyle(.plain)

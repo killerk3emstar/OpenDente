@@ -98,6 +98,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil
         }
+        // Remove sleep/wake observers to avoid stale callbacks
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     // MARK: - Status Bar
@@ -119,28 +121,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let state = battery.batteryState
         let pct = state.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
 
-        let iconName = charging.mode.batteryIconName(percentage: pct, isCharging: state.isCharging)
+        let iconName = settings.statusBarShowMode
+            ? charging.mode.batteryIconName(percentage: pct, isCharging: state.isCharging)
+            : ChargingMode.idle.batteryIconName(percentage: pct, isCharging: false)
         if iconName != lastIconName {
             let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
             button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "Battery \(pct)%")?.withSymbolConfiguration(config)
             lastIconName = iconName
         }
 
-        var parts: [String] = []
-
-        if settings.statusBarShowPercentage {
-            parts.append("\(pct)%")
-        }
-
-        if settings.statusBarShowTemperature, let temp = state.temperature {
-            parts.append(String(format: "%.0f°", temp))
-        }
-
-        if settings.statusBarShowPower, let power = state.systemPower, power > 0 {
-            parts.append(String(format: "%.0fW", power))
-        }
-
-        button.title = parts.isEmpty ? "" : " " + parts.joined(separator: " ")
+        let text = state.statusBarText(
+            effectivePercentage: pct,
+            showPercentage: settings.statusBarShowPercentage,
+            showTemperature: settings.statusBarShowTemperature,
+            showPower: settings.statusBarShowPower
+        )
+        button.title = text.isEmpty ? "" : " " + text
     }
 
     // MARK: - Popover
@@ -248,6 +244,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func didWake(_ notification: Notification) {
         HelperClient.shared.sendHeartbeat()
+        // Refresh battery state immediately — it may have changed during sleep
+        // (e.g. charger unplugged, battery drained). This triggers evaluateState
+        // via the Combine publisher, avoiding a stale-state gap until the next poll.
+        battery.update()
     }
 
 }

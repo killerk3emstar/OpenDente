@@ -230,23 +230,20 @@ struct StatusBarTab: View {
     private var statusBarIcon: String {
         let state = battery.batteryState
         let pct = state.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
-        return charging.mode.batteryIconName(percentage: pct, isCharging: state.isCharging)
+        return settings.statusBarShowMode
+            ? charging.mode.batteryIconName(percentage: pct, isCharging: state.isCharging)
+            : ChargingMode.idle.batteryIconName(percentage: pct, isCharging: false)
     }
 
     private var statusBarPreview: String {
         let state = battery.batteryState
         let pct = state.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
-        var parts: [String] = []
-        if settings.statusBarShowPercentage {
-            parts.append("\(pct)%")
-        }
-        if settings.statusBarShowTemperature, let temp = state.temperature {
-            parts.append(String(format: "%.0f°", temp))
-        }
-        if settings.statusBarShowPower, let power = state.systemPower, power > 0 {
-            parts.append(String(format: "%.0fW", power))
-        }
-        return parts.joined(separator: " ")
+        return state.statusBarText(
+            effectivePercentage: pct,
+            showPercentage: settings.statusBarShowPercentage,
+            showTemperature: settings.statusBarShowTemperature,
+            showPower: settings.statusBarShowPower
+        )
     }
 }
 
@@ -383,7 +380,7 @@ struct BatteryInfoTab: View {
                              format: { String(format: "%.2f A", $0) },
                              warn: { abs($0) > 10 })
                 validatedRow("Battery Power", raw: state.batteryPower,
-                             format: { String(format: "%.1f W", abs($0)) },
+                             format: { String(format: "%.1f W", $0) },
                              warn: { abs($0) > 200 })
                 validatedRow("System Power", raw: state.systemPower,
                              format: { String(format: "%.1f W", $0) },
@@ -418,11 +415,11 @@ struct BatteryInfoTab: View {
 
     private var ledColorName: String {
         switch charging.lastLEDColor {
-        case 0x00: return "Auto"
-        case 0x01: return "Off"
-        case 0x03: return "Green"
-        case 0x04: return "Orange"
-        default:   return charging.lastLEDColor.map { String(format: "0x%02X", $0) } ?? "–"
+        case HelperConstants.ledAuto:   return "Auto"
+        case HelperConstants.ledOff:    return "Off"
+        case HelperConstants.ledGreen:  return "Green"
+        case HelperConstants.ledOrange: return "Orange"
+        default: return charging.lastLEDColor.map { String(format: "0x%02X", $0) } ?? "–"
         }
     }
 

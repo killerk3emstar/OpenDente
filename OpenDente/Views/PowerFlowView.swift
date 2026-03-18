@@ -6,6 +6,11 @@ struct PowerFlowView: View {
     let battery: BatteryState
     var mode: ChargingMode = .idle
 
+    /// Mode says charging should be inhibited — trust it even if IOKit still reports charging.
+    private var isInhibitedMode: Bool {
+        mode == .paused || mode == .sailing || mode == .heatProtection
+    }
+
     private var hasAnyPowerData: Bool {
         battery.systemPower != nil || battery.adapterPower != nil || battery.batteryPower != nil
     }
@@ -71,22 +76,67 @@ struct PowerFlowView: View {
                     )
                 }
 
-                if battery.isCharging, let battPower = batteryChargingPower, battPower > 0.1 {
+                if isInhibitedMode && battery.isCharging {
+                    // Transitional: command sent but hardware still processing
+                    let label = if let battPower = batteryChargingPower, battPower > 0.1 {
+                        String(format: "Stopping… %.1f W", battPower)
+                    } else {
+                        "Stopping…"
+                    }
+                    flowBar(
+                        label: label,
+                        icon: "stop.circle",
+                        color: .orange,
+                        proportion: batteryChargingPower.map { battPower in
+                            guard let adapter = battery.adapterPower, adapter > 0.1 else { return 0.3 }
+                            return CGFloat(battPower / adapter).clamped(to: 0.1...1.0)
+                        } ?? 0.3
+                    )
+                } else if battery.isCharging, let battPower = batteryChargingPower, battPower > 0.1 {
                     flowBar(
                         label: String(format: "%.1f W", battPower),
                         icon: "battery.100percent.bolt",
                         color: .green,
                         proportion: batteryProportion
                     )
-                }
-
-                if !battery.isCharging {
-                    if mode == .topUp {
+                } else if battery.isCharging {
+                    // Charging at very low power (trickle) or no power data available
+                    flowBar(
+                        label: "Charging",
+                        icon: "battery.100percent.bolt",
+                        color: .green,
+                        proportion: 0.1
+                    )
+                } else {
+                    // IOKit reports not charging — show mode-appropriate label
+                    if mode == .sailing {
+                        flowBar(
+                            label: "Sailing",
+                            icon: "wind",
+                            color: .cyan,
+                            proportion: 1.0
+                        )
+                    } else if mode == .heatProtection {
+                        flowBar(
+                            label: "Heat Protection",
+                            icon: "thermometer.sun.fill",
+                            color: .red,
+                            proportion: 1.0
+                        )
+                    } else if mode == .topUp {
                         flowBar(
                             label: "Topping Up",
                             icon: "arrow.up.to.line.circle.fill",
                             color: .green,
                             proportion: 1.0
+                        )
+                    } else if mode == .charging {
+                        // Charging enabled but IOKit hasn't confirmed yet
+                        flowBar(
+                            label: "Starting…",
+                            icon: "battery.100percent.bolt",
+                            color: .green,
+                            proportion: 0.1
                         )
                     } else {
                         flowBar(
@@ -201,11 +251,5 @@ struct PowerFlowView: View {
         guard let adapter = battery.adapterPower, adapter > 0.1,
               let battPower = batteryChargingPower else { return 0.3 }
         return CGFloat(battPower / adapter).clamped(to: 0.1...1.0)
-    }
-}
-
-extension Comparable {
-    func clamped(to range: ClosedRange<Self>) -> Self {
-        min(max(self, range.lowerBound), range.upperBound)
     }
 }

@@ -272,28 +272,35 @@ final class DisplayLogicTests: XCTestCase {
 
     func testCanDischarge_pluggedInAboveLimit_true() {
         XCTAssertTrue(
-            PopoverView.canDischarge(isPluggedIn: true, percentage: 85, chargeLimit: 80, isHelperInstalled: true)
+            PopoverView.canDischarge(isPluggedIn: true, percentage: 85, chargeLimit: 80, isHelperInstalled: true, chargingAPI: .legacy)
         )
     }
 
     func testCanDischarge_notPluggedIn_false() {
         XCTAssertFalse(
-            PopoverView.canDischarge(isPluggedIn: false, percentage: 85, chargeLimit: 80, isHelperInstalled: true)
+            PopoverView.canDischarge(isPluggedIn: false, percentage: 85, chargeLimit: 80, isHelperInstalled: true, chargingAPI: .legacy)
         )
     }
 
     func testCanDischarge_atOrBelowLimit_false() {
         XCTAssertFalse(
-            PopoverView.canDischarge(isPluggedIn: true, percentage: 80, chargeLimit: 80, isHelperInstalled: true)
+            PopoverView.canDischarge(isPluggedIn: true, percentage: 80, chargeLimit: 80, isHelperInstalled: true, chargingAPI: .legacy)
         )
         XCTAssertFalse(
-            PopoverView.canDischarge(isPluggedIn: true, percentage: 75, chargeLimit: 80, isHelperInstalled: true)
+            PopoverView.canDischarge(isPluggedIn: true, percentage: 75, chargeLimit: 80, isHelperInstalled: true, chargingAPI: .legacy)
         )
     }
 
     func testCanDischarge_noHelper_false() {
         XCTAssertFalse(
-            PopoverView.canDischarge(isPluggedIn: true, percentage: 85, chargeLimit: 80, isHelperInstalled: false)
+            PopoverView.canDischarge(isPluggedIn: true, percentage: 85, chargeLimit: 80, isHelperInstalled: false, chargingAPI: .legacy)
+        )
+    }
+
+    func testCanDischarge_unknownAPI_false() {
+        XCTAssertFalse(
+            PopoverView.canDischarge(isPluggedIn: true, percentage: 85, chargeLimit: 80, isHelperInstalled: true, chargingAPI: .unknown),
+            "Unknown charging API must prevent discharge — no SMC keys to write"
         )
     }
 }

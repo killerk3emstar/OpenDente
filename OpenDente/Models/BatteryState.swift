@@ -51,6 +51,24 @@ struct BatteryState: Equatable {
         return h > 0 ? "\(h)h \(m)m" : "\(m)m"
     }
 
+    /// Build the status bar text from display flags. Shared between AppDelegate and SettingsView.
+    func statusBarText(
+        effectivePercentage pct: Int,
+        showPercentage: Bool,
+        showTemperature: Bool,
+        showPower: Bool
+    ) -> String {
+        var parts: [String] = []
+        if showPercentage { parts.append("\(pct)%") }
+        if showTemperature, let temp = temperature {
+            parts.append(String(format: "%.0f°", temp))
+        }
+        if showPower, let power = systemPower, power > 0 {
+            parts.append(String(format: "%.0fW", power))
+        }
+        return parts.joined(separator: " ")
+    }
+
     static let unknown = BatteryState(
         percentage: 0, hardwarePercentage: nil, isCharging: false, isPluggedIn: false,
         currentCapacity: nil, maxCapacity: nil, designCapacity: nil, cycleCount: nil,
@@ -213,6 +231,14 @@ enum PopoverDetailItem: String, CaseIterable, Codable, Identifiable {
         .temperature, .batteryHealth, .cycleCount,
         .timeRemaining, .systemPower, .adapterPower
     ]
+}
+
+// MARK: - Comparable Utilities
+
+extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
+    }
 }
 
 /// Which generation of SMC charging keys to use
