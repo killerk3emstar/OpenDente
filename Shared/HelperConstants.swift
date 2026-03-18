@@ -42,4 +42,15 @@ enum HelperConstants {
 
     /// Name of the launchd plist file (in app bundle Contents/Library/LaunchDaemons/)
     static let launchdPlistName = "com.opendente.helper.plist"
+
+    // MARK: - MagSafe LED Colors (ACLC key values)
+
+    /// Let the system control the LED (default behavior)
+    static let ledAuto: UInt8 = 0x00
+    /// Turn LED off
+    static let ledOff: UInt8 = 0x01
+    /// Green LED (charging complete / limit reached)
+    static let ledGreen: UInt8 = 0x03
+    /// Orange LED (actively charging / discharging)
+    static let ledOrange: UInt8 = 0x04
 }

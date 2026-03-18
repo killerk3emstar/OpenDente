@@ -98,11 +98,11 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
     // MARK: - NSXPCListenerDelegate
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        NSLog("[HelperDelegate] shouldAcceptNewConnection from pid \(connection.processIdentifier)")
+        log.info("shouldAcceptNewConnection from pid \(connection.processIdentifier)")
 
         // Verify the caller is our app
         guard verifyCaller(connection) else {
-            NSLog("[HelperDelegate] REJECTED connection from pid \(connection.processIdentifier)")
+            log.warning("REJECTED connection from pid \(connection.processIdentifier)")
             return false
         }
 
@@ -110,12 +110,12 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         connection.exportedObject = self
 
         connection.invalidationHandler = { [weak self] in
-            NSLog("[HelperDelegate] XPC connection invalidated (app quit or crashed)")
+            log.info("XPC connection invalidated (app quit or crashed)")
             self?.handleClientDisconnect()
         }
 
         connection.interruptionHandler = {
-            NSLog("[HelperDelegate] XPC connection interrupted (transient)")
+            log.info("XPC connection interrupted (transient)")
         }
 
         connection.resume()
@@ -123,7 +123,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         hasActiveClient = true
         lock.unlock()
         watchdog.receivedHeartbeat()
-        NSLog("[HelperDelegate] ACCEPTED connection from pid \(connection.processIdentifier)")
+        log.info("ACCEPTED connection from pid \(connection.processIdentifier)")
         return true
     }
 
@@ -135,7 +135,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         #if DEBUG
         // In debug builds, skip SecCode verification — Xcode debug signing
         // doesn't always pass identifier checks reliably.
-        NSLog("[HelperDelegate] DEBUG: accepting connection from pid \(pid) without SecCode check")
+        log.debug("DEBUG: accepting connection from pid \(pid) without SecCode check")
         return true
         #else
         // Production: code signature verification
@@ -261,8 +261,8 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             case .unknown:
                 break
             }
-            // If enabling discharge, also inhibit charging
             if enable {
+                // Enabling discharge — also inhibit charging
                 switch chargingAPI {
                 case .legacy:
                     try smc.writeKey("CH0B", bytes: [0x02])
@@ -274,11 +274,21 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 }
                 HelperState.write(.inhibited)
             } else {
-                // Discharge stopped but charging keys are still inhibited
-                // (we only cleared the discharge key above).
-                // Write .inhibited so crash recovery resets if helper dies
-                // before the app calls enableCharging() on the next cycle.
-                HelperState.write(.inhibited)
+                // Disabling discharge — also re-enable charging.
+                // The app will send inhibitCharging() if needed (e.g. at charge limit),
+                // but leaving charging keys inhibited without active discharge creates
+                // an inconsistent state that delays correct behavior until the next poll.
+                switch chargingAPI {
+                case .legacy:
+                    try smc.writeKey("CH0B", bytes: [0x00])
+                    try smc.writeKey("CH0C", bytes: [0x00])
+                case .tahoe:
+                    try smc.writeKey("CHTE", bytes: [0x00, 0x00, 0x00, 0x00])
+                case .unknown:
+                    break
+                }
+                verifyChargingKey(expected: false)
+                HelperState.write(.normal)
             }
             log.info("Force discharge: \(enable)")
             reply(true, nil)
@@ -376,7 +386,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
 
             // Reset MagSafe LED to system default if available
             if hasMagSafeLED {
-                try smc.writeKey("ACLC", bytes: [0x00])
+                try smc.writeKey("ACLC", bytes: [HelperConstants.ledAuto])
             }
 
             HelperState.clear()

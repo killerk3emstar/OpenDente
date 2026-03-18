@@ -13,6 +13,14 @@ final class HelperClient: @unchecked Sendable {
     private var connection: NSXPCConnection?
     private var heartbeatTimer: Timer?
     private let lock = NSLock()
+    private var isIntentionalDisconnect = false
+    private var reconnectAttempts = 0
+    private static let maxReconnectAttempts = 5
+    private static let reconnectDelays: [TimeInterval] = [1, 2, 5, 10, 30]
+
+    /// Called when the helper process restarts (after crash/interruption) or after
+    /// successful reconnection. ChargingManager uses this to resync charging state.
+    var onHelperRestarted: (() -> Void)?
 
     // MARK: - Connection
 
@@ -24,6 +32,8 @@ final class HelperClient: @unchecked Sendable {
         lock.lock()
         let existing = connection
         connection = nil
+        isIntentionalDisconnect = false
+        reconnectAttempts = 0
         lock.unlock()
         if existing != nil {
             stopHeartbeat()
@@ -37,14 +47,33 @@ final class HelperClient: @unchecked Sendable {
         conn.remoteObjectInterface = NSXPCInterface(with: HelperProtocol.self)
 
         conn.invalidationHandler = { [weak self] in
-            log.info("XPC connection invalidated")
-            self?.lock.lock()
-            self?.connection = nil
-            self?.lock.unlock()
+            guard let self else { return }
+            log.warning("XPC connection invalidated")
+            self.lock.lock()
+            self.connection = nil
+            let intentional = self.isIntentionalDisconnect
+            self.lock.unlock()
+
+            guard !intentional else { return }
+
+            // Connection permanently lost — attempt reconnection with backoff.
+            // The helper is launchd-managed, so it should restart automatically.
+            Task { @MainActor in
+                self.stopHeartbeat()
+                self.scheduleReconnect()
+            }
         }
 
-        conn.interruptionHandler = {
-            log.warning("XPC connection interrupted (transient)")
+        conn.interruptionHandler = { [weak self] in
+            guard let self else { return }
+            // Helper process crashed but launchd will restart it.
+            // The NSXPCConnection remains valid — new messages are queued
+            // and delivered when the helper comes back.
+            // We must resync because the fresh helper lost its in-memory state.
+            log.warning("XPC connection interrupted — helper crashed, will auto-reconnect")
+            Task { @MainActor in
+                self.onHelperRestarted?()
+            }
         }
 
         conn.resume()
@@ -55,16 +84,45 @@ final class HelperClient: @unchecked Sendable {
         log.info("Connected to helper")
     }
 
-    /// Disconnect from the helper
+    /// Disconnect from the helper (intentional — suppresses auto-reconnect)
     @MainActor
     func disconnect() {
         stopHeartbeat()
         lock.lock()
+        isIntentionalDisconnect = true
         let conn = connection
         connection = nil
         lock.unlock()
         conn?.invalidate()
         log.info("Disconnected from helper")
+    }
+
+    // MARK: - Auto-Reconnect
+
+    @MainActor
+    private func scheduleReconnect() {
+        guard reconnectAttempts < Self.maxReconnectAttempts else {
+            log.error("XPC reconnect failed after \(Self.maxReconnectAttempts) attempts — helper may need reinstallation")
+            return
+        }
+
+        let delay = Self.reconnectDelays[min(reconnectAttempts, Self.reconnectDelays.count - 1)]
+        reconnectAttempts += 1
+        log.info("Scheduling XPC reconnect \(self.reconnectAttempts)/\(Self.maxReconnectAttempts) in \(delay)s")
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+
+            self.lock.lock()
+            let needsReconnect = self.connection == nil && !self.isIntentionalDisconnect
+            self.lock.unlock()
+
+            guard needsReconnect else { return }
+
+            log.info("XPC reconnect: attempting...")
+            self.connect()
+            self.onHelperRestarted?()
+        }
     }
 
     // MARK: - Heartbeat
@@ -197,7 +255,10 @@ final class HelperClient: @unchecked Sendable {
                 semaphore.signal()
             }
         }
-        _ = semaphore.wait(timeout: .now() + timeout)
+        let result = semaphore.wait(timeout: .now() + timeout)
+        if result == .timedOut {
+            log.warning("resetToDefaultsSync timed out after \(timeout)s — helper may not have reset")
+        }
     }
 
     // MARK: - Private
