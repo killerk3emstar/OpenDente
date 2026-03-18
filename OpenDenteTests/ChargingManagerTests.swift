@@ -103,39 +103,32 @@ func makeBatteryState(
 @MainActor
 final class ChargingManagerTests: XCTestCase {
 
+    private let suiteName = "com.opendente.tests.charging"
     private var manager: ChargingManager!
     private var mock: MockChargingControl!
     private var settings: AppSettings!
 
     override func setUp() {
         super.setUp()
-        settings = AppSettings.shared
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        settings = AppSettings(defaults: defaults)
         mock = MockChargingControl()
         manager = ChargingManager(settings: settings, helper: mock, battery: .shared)
         manager.chargingAPI = .legacy
         manager.isHelperInstalled = true
 
-        // Known defaults for deterministic tests
-        settings.chargeLimit = 80
+        // Explicit preconditions — tests that need sailing/heat enable it themselves
         settings.sailingModeEnabled = false
         settings.heatProtectionEnabled = false
-        settings.automaticDischarge = false
-        settings.controlMagSafeLED = false  // Prevent LED calls from polluting existing tests
-        settings.useHardwareBatteryPercentage = false
+        settings.controlMagSafeLED = false
     }
 
     override func tearDown() {
-        settings.chargeLimit = 80
-        settings.sailingModeEnabled = true
-        settings.sailingRange = 10
-        settings.heatProtectionEnabled = true
-        settings.heatProtectionTemp = 35.0
-        settings.automaticDischarge = false
-        settings.controlMagSafeLED = true
-        settings.magSafeLEDOffWhenInactive = false
-        settings.useHardwareBatteryPercentage = false
+        UserDefaults.standard.removePersistentDomain(forName: suiteName)
         manager = nil
         mock = nil
+        settings = nil
         super.tearDown()
     }
 

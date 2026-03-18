@@ -8,7 +8,7 @@ import SwiftUI
 /// - PDTR → adapter power (total charger delivery: system + battery + losses)
 /// - B0AP (or V*A) → battery power (signed: positive = charging, negative = discharging)
 /// Visual state for the power flow display — what topology is shown.
-/// Extracted for testability: pure function of BatteryState + ChargingMode.
+/// Pure function of BatteryState + ChargingMode. Used by the view and tests alike.
 enum PowerFlowVisualState: Equatable {
     case noPowerData
     case onBattery                // Battery → System (also force discharge)
@@ -24,16 +24,8 @@ struct PowerFlowView: View {
     let battery: BatteryState
     var mode: ChargingMode = .idle
 
-    /// Mode says charging should be inhibited — trust it even if IOKit still reports charging.
-    private var isInhibitedMode: Bool {
-        mode == .paused || mode == .sailing || mode == .heatProtection
-    }
-
-    private var hasAnyPowerData: Bool {
-        battery.systemPower != nil || battery.adapterPower != nil || battery.batteryPower != nil
-    }
-
-    /// Determines the visual state — pure logic, no UI. Testable.
+    /// Determines the visual state — pure logic, no UI.
+    /// Called by both the view (single source of truth) and tests.
     static func resolveVisualState(battery: BatteryState, mode: ChargingMode) -> PowerFlowVisualState {
         let hasAnyPower = battery.systemPower != nil || battery.adapterPower != nil || battery.batteryPower != nil
         guard hasAnyPower else { return .noPowerData }
@@ -47,7 +39,8 @@ struct PowerFlowView: View {
 
         let bp = battery.batteryPower ?? 0
 
-        // Peak load: battery draining while plugged in (not force discharge)
+        // Peak load: battery draining while plugged in (not inhibited modes where
+        // small negative readings are measurement noise, not real peak load)
         if !battery.isCharging && bp < -0.1 && !isInhibited {
             return .peakLoad
         }
@@ -87,12 +80,62 @@ struct PowerFlowView: View {
         }
     }
 
+    /// Resolved once per render — single source of truth for both view and tests.
+    private var visualState: PowerFlowVisualState {
+        Self.resolveVisualState(battery: battery, mode: mode)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            if hasAnyPowerData {
-                powerFlowContent
-            } else {
+            switch visualState {
+            case .noPowerData:
                 noPowerDataView
+            case .onBattery:
+                onBatteryView
+            case .peakLoad:
+                peakLoadView(batteryDrain: abs(battery.batteryPower ?? 0))
+            case .pluggedInCharging:
+                pluggedInAdapterView {
+                    flowBar(
+                        label: String(format: "%.1f W", battery.batteryPower ?? 0),
+                        icon: "battery.100percent.bolt",
+                        color: .green,
+                        proportion: batteryProportion(battery.batteryPower ?? 0)
+                    )
+                }
+            case .pluggedInTrickleCharging:
+                pluggedInAdapterView {
+                    flowBar(
+                        label: "Charging",
+                        icon: "battery.100percent.bolt",
+                        color: .green,
+                        proportion: 0.1
+                    )
+                }
+            case .pluggedInPaused:
+                pluggedInAdapterView { EmptyView() }
+            case .pluggedInStopping:
+                pluggedInAdapterView {
+                    let bp = battery.batteryPower ?? 0
+                    let label = bp > 0.1
+                        ? String(format: "Stopping\u{2026} %.1f W", bp)
+                        : "Stopping\u{2026}"
+                    flowBar(
+                        label: label,
+                        icon: "stop.circle",
+                        color: .orange,
+                        proportion: bp > 0.1 ? batteryProportion(bp) : 0.3
+                    )
+                }
+            case .pluggedInStarting:
+                pluggedInAdapterView {
+                    flowBar(
+                        label: "Starting\u{2026}",
+                        icon: "battery.100percent.bolt",
+                        color: .green,
+                        proportion: 0.1
+                    )
+                }
             }
         }
         .padding(10)
@@ -121,92 +164,26 @@ struct PowerFlowView: View {
         }
     }
 
-    // MARK: - Power Flow Content
+    // MARK: - Plugged In Adapter View
 
-    @ViewBuilder
-    private var powerFlowContent: some View {
-        if battery.isPluggedIn && mode != .discharging {
-            pluggedInView
-        } else {
-            onBatteryView
-        }
-    }
+    /// Common layout for all plugged-in states: adapter source + system bar + optional battery bar.
+    private func pluggedInAdapterView<BatteryBar: View>(@ViewBuilder batteryBar: () -> BatteryBar) -> some View {
+        HStack(spacing: 0) {
+            sourceLabel(icon: "bolt.fill", label: adapterWattsText)
 
-    // MARK: - Plugged In View
-
-    @ViewBuilder
-    private var pluggedInView: some View {
-        let bp = battery.batteryPower ?? 0
-
-        if !battery.isCharging && bp < -0.1 {
-            // PEAK LOAD: battery supplementing adapter (system draws more than charger provides)
-            peakLoadView(batteryDrain: abs(bp))
-        } else {
-            // Normal plugged-in: one source (adapter), one or two flow bars
-            HStack(spacing: 0) {
-                sourceLabel(icon: "bolt.fill", label: adapterWattsText)
-
-                VStack(spacing: 4) {
-                    // System power bar (always shown if available)
-                    if let systemPower = battery.systemPower, systemPower > 0.1 {
-                        flowBar(
-                            label: String(format: "%.1f W", systemPower),
-                            icon: "laptopcomputer",
-                            color: .blue,
-                            proportion: systemProportion
-                        )
-                    }
-
-                    // Battery bar: only when energy actually flows to/from battery
-                    batteryFlowBar
+            VStack(spacing: 4) {
+                if let systemPower = battery.systemPower, systemPower > 0.1 {
+                    flowBar(
+                        label: String(format: "%.1f W", systemPower),
+                        icon: "laptopcomputer",
+                        color: .blue,
+                        proportion: systemProportion
+                    )
                 }
+
+                batteryBar()
             }
         }
-    }
-
-    // MARK: - Battery Flow Bar (only shown when energy flows)
-
-    @ViewBuilder
-    private var batteryFlowBar: some View {
-        let bp = battery.batteryPower ?? 0
-
-        if isInhibitedMode && battery.isCharging {
-            // Transitional: inhibit sent but hardware still charging
-            let label = bp > 0.1
-                ? String(format: "Stopping\u{2026} %.1f W", bp)
-                : "Stopping\u{2026}"
-            flowBar(
-                label: label,
-                icon: "stop.circle",
-                color: .orange,
-                proportion: bp > 0.1 ? batteryProportion(bp) : 0.3
-            )
-        } else if battery.isCharging && bp > 0.1 {
-            // Actively charging: energy flowing TO battery (measured value)
-            flowBar(
-                label: String(format: "%.1f W", bp),
-                icon: "battery.100percent.bolt",
-                color: .green,
-                proportion: batteryProportion(bp)
-            )
-        } else if battery.isCharging {
-            // Charging at very low power (trickle) or no power data
-            flowBar(
-                label: "Charging",
-                icon: "battery.100percent.bolt",
-                color: .green,
-                proportion: 0.1
-            )
-        } else if mode == .charging && !battery.isCharging {
-            // Charging enabled but IOKit hasn't confirmed yet
-            flowBar(
-                label: "Starting\u{2026}",
-                icon: "battery.100percent.bolt",
-                color: .green,
-                proportion: 0.1
-            )
-        }
-        // else: no battery bar — no energy flows to/from battery (paused/sailing/heat)
     }
 
     // MARK: - Peak Load View (two sources → system)

@@ -22,9 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - App Lifecycle
 
     /// True when the app is launched as a test host by Xcode.
-    /// In that case we must NOT start real services — the test host runs with
-    /// default settings and would send real SMC commands (e.g. enableCharging)
-    /// that conflict with the user's running app instance.
+    /// Tests load into the app process for symbol access, but we skip real services
+    /// to avoid SMC commands and UserDefaults pollution from the test host.
     private static var isRunningTests: Bool {
         ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
     }
@@ -99,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        guard !Self.isRunningTests else { return }
         // Synchronous reset with timeout to ensure charging is re-enabled before exit
         charging.resetToDefaultsSync()
         HelperClient.shared.disconnect()

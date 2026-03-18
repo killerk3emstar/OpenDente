@@ -4,23 +4,22 @@ import XCTest
 @MainActor
 final class NotificationServiceTests: XCTestCase {
 
+    private let suiteName = "com.opendente.tests.notifications"
     private var service: NotificationService!
     private var settings: AppSettings!
 
     override func setUp() {
         super.setUp()
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
         service = NotificationService()
-        settings = AppSettings.shared
-        settings.showNotifications = true
+        settings = AppSettings(defaults: defaults)
     }
 
     override func tearDown() {
-        settings.showNotifications = true
-        settings.notifyChargeLimitReached = true
-        settings.notifyTopUpComplete = true
-        settings.notifyHeatProtection = true
-        settings.notifyDischargeComplete = true
+        UserDefaults.standard.removePersistentDomain(forName: suiteName)
         service = nil
+        settings = nil
         super.tearDown()
     }
 

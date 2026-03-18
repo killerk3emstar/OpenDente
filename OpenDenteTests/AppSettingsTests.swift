@@ -4,24 +4,25 @@ import XCTest
 @MainActor
 final class AppSettingsTests: XCTestCase {
 
+    private let suiteName = "com.opendente.tests.settings"
     private var settings: AppSettings!
 
     override func setUp() {
         super.setUp()
-        settings = AppSettings.shared
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        settings = AppSettings(defaults: defaults)
     }
 
     override func tearDown() {
-        // Restore defaults
-        settings.chargeLimit = 80
-        settings.sailingRange = 10
+        UserDefaults.standard.removePersistentDomain(forName: suiteName)
+        settings = nil
         super.tearDown()
     }
 
     // MARK: - Charge Limit Validation
 
     func testChargeLimit_defaultIs80() {
-        UserDefaults.standard.removeObject(forKey: "chargeLimit")
         XCTAssertEqual(settings.chargeLimit, 80)
     }
 
@@ -50,7 +51,6 @@ final class AppSettingsTests: XCTestCase {
     // MARK: - Sailing Range Validation
 
     func testSailingRange_defaultIs10() {
-        UserDefaults.standard.removeObject(forKey: "sailingRange")
         XCTAssertEqual(settings.sailingRange, 10)
     }
 
@@ -86,5 +86,33 @@ final class AppSettingsTests: XCTestCase {
             XCTAssertLessThan(settings.sailingLowerBound, settings.chargeLimit,
                 "Lower bound must be less than limit (limit=\(limit))")
         }
+    }
+
+    // MARK: - Boolean Defaults
+
+    func testBooleanDefaults_trueByDefault() {
+        XCTAssertTrue(settings.chargingEnabled)
+        XCTAssertTrue(settings.sailingModeEnabled)
+        XCTAssertTrue(settings.heatProtectionEnabled)
+        XCTAssertTrue(settings.statusBarShowPercentage)
+        XCTAssertTrue(settings.statusBarShowMode)
+        XCTAssertTrue(settings.showPowerFlow)
+        XCTAssertTrue(settings.controlMagSafeLED)
+        XCTAssertTrue(settings.showNotifications)
+        XCTAssertTrue(settings.notifyChargeLimitReached)
+        XCTAssertTrue(settings.notifyTopUpComplete)
+        XCTAssertTrue(settings.notifyHeatProtection)
+        XCTAssertTrue(settings.notifyDischargeComplete)
+    }
+
+    func testBooleanDefaults_falseByDefault() {
+        XCTAssertFalse(settings.automaticDischarge)
+        XCTAssertFalse(settings.stopChargingWhenSleeping)
+        XCTAssertFalse(settings.disableSleepUntilChargeLimit)
+        XCTAssertFalse(settings.statusBarShowTemperature)
+        XCTAssertFalse(settings.statusBarShowPower)
+        XCTAssertFalse(settings.magSafeLEDOffWhenInactive)
+        XCTAssertFalse(settings.launchAtLogin)
+        XCTAssertFalse(settings.useHardwareBatteryPercentage)
     }
 }
