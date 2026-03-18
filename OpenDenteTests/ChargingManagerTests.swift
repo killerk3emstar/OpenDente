@@ -304,6 +304,23 @@ final class ChargingManagerTests: XCTestCase {
             "paused→sailing: charging already inhibited, no SMC write needed")
     }
 
+    func testSailing_sailingToPaused_noRedundantSMCWrite() {
+        settings.sailingModeEnabled = true
+        settings.sailingRange = 10  // lower bound = 70
+
+        // Enter sailing range → inhibitCharging called
+        manager.evaluateState(makeBatteryState(percentage: 75))
+        XCTAssertEqual(manager.mode, .sailing)
+        mock.reset()
+
+        // Limit lowered to 75% → now at limit → paused, but charging already inhibited
+        settings.chargeLimit = 75
+        manager.evaluateState(makeBatteryState(percentage: 75))
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertTrue(mock.calls.isEmpty,
+            "sailing→paused: charging already inhibited, no SMC write needed")
+    }
+
     func testSailing_appStartInSailingRange_sails() {
         settings.sailingModeEnabled = true
         settings.sailingRange = 10  // lower bound = 70

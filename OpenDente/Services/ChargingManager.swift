@@ -273,8 +273,11 @@ final class ChargingManager: ObservableObject {
             if pct >= limit {
                 // At or above limit - pause charging
                 if mode != .paused {
-                    log.info("Limit reached: \(pct)% ≥ \(limit)% → inhibiting")
-                    inhibitCharging()
+                    log.info("Limit reached: \(pct)% ≥ \(limit)% → paused")
+                    // Only send SMC write if charging isn't already inhibited
+                    if mode != .sailing && mode != .heatProtection {
+                        inhibitCharging()
+                    }
                     mode = .paused
                 }
             } else if pct >= lowerBound {
@@ -299,8 +302,11 @@ final class ChargingManager: ObservableObject {
             // No sailing mode - simple limit
             if pct >= limit {
                 if mode != .paused {
-                    log.info("Limit reached: \(pct)% ≥ \(limit)% → inhibiting")
-                    inhibitCharging()
+                    log.info("Limit reached: \(pct)% ≥ \(limit)% → paused")
+                    // Only send SMC write if charging isn't already inhibited
+                    if mode != .sailing && mode != .heatProtection {
+                        inhibitCharging()
+                    }
                     mode = .paused
                 }
             } else {
