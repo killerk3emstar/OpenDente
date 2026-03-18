@@ -825,6 +825,46 @@ final class ChargingManagerTests: XCTestCase {
             "Unknown API: mode changes for UI, but no SMC writes attempted")
     }
 
+    func testUnknownAPI_startDischarge_blocked() {
+        manager.chargingAPI = .unknown
+        manager.startDischarge()
+        XCTAssertNotEqual(manager.mode, .discharging,
+            "startDischarge with unknown API must not set mode to .discharging")
+        XCTAssertTrue(mock.calls.isEmpty, "No SMC writes on unknown API")
+    }
+
+    func testUnknownAPI_startTopUp_blocked() {
+        manager.chargingAPI = .unknown
+        manager.startTopUp()
+        XCTAssertNotEqual(manager.mode, .topUp,
+            "startTopUp with unknown API must not set mode to .topUp")
+        XCTAssertTrue(mock.calls.isEmpty, "No SMC writes on unknown API")
+    }
+
+    func testUnknownAPI_pauseCharging_blocked() {
+        manager.chargingAPI = .unknown
+        manager.pauseCharging()
+        XCTAssertNotEqual(manager.mode, .paused,
+            "pauseCharging with unknown API must not set mode to .paused")
+        XCTAssertTrue(mock.calls.isEmpty, "No SMC writes on unknown API")
+    }
+
+    func testHelperNotInstalled_startDischarge_blocked() {
+        manager.isHelperInstalled = false
+        manager.startDischarge()
+        XCTAssertNotEqual(manager.mode, .discharging,
+            "startDischarge without helper must not set mode to .discharging")
+        XCTAssertTrue(mock.calls.isEmpty)
+    }
+
+    func testHelperNotInstalled_startTopUp_blocked() {
+        manager.isHelperInstalled = false
+        manager.startTopUp()
+        XCTAssertNotEqual(manager.mode, .topUp,
+            "startTopUp without helper must not set mode to .topUp")
+        XCTAssertTrue(mock.calls.isEmpty)
+    }
+
     // =========================================================================
     // MARK: - Helper Failure Handling
     // =========================================================================
@@ -991,8 +1031,8 @@ final class ChargingManagerTests: XCTestCase {
         let firstInhibitCount = mock.calls.filter { $0 == .inhibitCharging }.count
         XCTAssertEqual(firstInhibitCount, 1)
 
-        // Simulate 6 seconds passing (past the 5s debounce)
-        manager.lastInhibitTime = Date().addingTimeInterval(-6)
+        // Simulate 16 seconds passing (past the 15s debounce)
+        manager.lastInhibitTime = Date().addingTimeInterval(-16)
         mock.clearCalls()
         manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
         XCTAssertEqual(manager.mode, .paused)
@@ -1013,6 +1053,50 @@ final class ChargingManagerTests: XCTestCase {
             "Should NOT re-send inhibit when system confirms not charging")
     }
 
+    func testVerification_stopsResendingAfter3Retries() {
+        manager.evaluateState(makeBatteryState(percentage: 90))
+        XCTAssertEqual(manager.mode, .paused)
+
+        // Simulate 3 re-send cycles (past debounce each time)
+        for i in 1...3 {
+            manager.lastInhibitTime = Date().addingTimeInterval(-16)
+            mock.clearCalls()
+            manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+            XCTAssertEqual(mock.calls.filter { $0 == .inhibitCharging }.count, 1,
+                "Re-send attempt \(i) should fire")
+        }
+
+        // 4th attempt: should NOT re-send (retry limit reached)
+        manager.lastInhibitTime = Date().addingTimeInterval(-16)
+        mock.clearCalls()
+        manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        XCTAssertTrue(mock.calls.filter { $0 == .inhibitCharging }.isEmpty,
+            "Should stop re-sending after 3 retries — IOKit lag, not a real failure")
+    }
+
+    func testVerification_retryCountResetsWhenIOKitCatchesUp() {
+        manager.evaluateState(makeBatteryState(percentage: 90))
+        XCTAssertEqual(manager.mode, .paused)
+
+        // Use up 2 retries
+        for _ in 1...2 {
+            manager.lastInhibitTime = Date().addingTimeInterval(-16)
+            manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        }
+        XCTAssertEqual(manager.inhibitRetryCount, 2)
+
+        // IOKit catches up (isCharging=false)
+        manager.evaluateState(makeBatteryState(percentage: 90, isCharging: false))
+        XCTAssertEqual(manager.inhibitRetryCount, 0, "Retry count should reset when IOKit confirms")
+
+        // New inhibit cycle should have fresh retries
+        manager.lastInhibitTime = Date().addingTimeInterval(-16)
+        mock.clearCalls()
+        manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        XCTAssertEqual(mock.calls.filter { $0 == .inhibitCharging }.count, 1,
+            "Fresh retry after IOKit reset")
+    }
+
     func testVerification_sailingButStillCharging_resendsInhibit() {
         settings.sailingModeEnabled = true
         settings.sailingRange = 10
@@ -1020,7 +1104,7 @@ final class ChargingManagerTests: XCTestCase {
         manager.evaluateState(makeBatteryState(percentage: 75))
         XCTAssertEqual(manager.mode, .sailing)
 
-        manager.lastInhibitTime = Date().addingTimeInterval(-6)
+        manager.lastInhibitTime = Date().addingTimeInterval(-16)
         mock.clearCalls()
         manager.evaluateState(makeBatteryState(percentage: 75, isCharging: true))
         XCTAssertEqual(manager.mode, .sailing)
@@ -1035,10 +1119,22 @@ final class ChargingManagerTests: XCTestCase {
     func testMagSafeLED_chargingMode_sendsOrange() {
         settings.controlMagSafeLED = true
         manager.helperVersion = HelperConstants.helperVersion
-        manager.evaluateState(makeBatteryState(percentage: 50))
+        // LED shows orange in charging mode — reflects intent, not IOKit lag
+        manager.evaluateState(makeBatteryState(percentage: 50, isCharging: true))
         XCTAssertEqual(manager.mode, .charging)
-        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x04)),
-            "Charging mode should set LED to orange (0x04)")
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: HelperConstants.ledOrange)),
+            "Charging mode should set LED to orange")
+    }
+
+    func testMagSafeLED_chargingMode_orangeEvenBeforeIOKitConfirms() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = HelperConstants.helperVersion
+        // IOKit hasn't confirmed charging yet (isCharging=false), but mode is .charging
+        // LED should still be orange — shows intent, not stale IOKit state
+        manager.evaluateState(makeBatteryState(percentage: 50, isCharging: false))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertEqual(manager.lastLEDColor, HelperConstants.ledOrange,
+            "Charging mode should show orange LED even before IOKit confirms (intent, not lag)")
     }
 
     func testMagSafeLED_pausedMode_sendsGreen() {
@@ -1046,8 +1142,8 @@ final class ChargingManagerTests: XCTestCase {
         manager.helperVersion = HelperConstants.helperVersion
         manager.evaluateState(makeBatteryState(percentage: 80))
         XCTAssertEqual(manager.mode, .paused)
-        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x03)),
-            "Paused mode should set LED to green (0x03)")
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: HelperConstants.ledGreen)),
+            "Paused mode should set LED to green")
     }
 
     func testMagSafeLED_onBattery_sendsDefault() {
@@ -1055,8 +1151,8 @@ final class ChargingManagerTests: XCTestCase {
         manager.helperVersion = HelperConstants.helperVersion
         manager.evaluateState(makeBatteryState(percentage: 50, isPluggedIn: false))
         XCTAssertEqual(manager.mode, .onBattery)
-        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x00)),
-            "On battery should set LED to system default (0x00)")
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: HelperConstants.ledAuto)),
+            "On battery should set LED to system default")
     }
 
     func testMagSafeLED_disabled_noCalls() {
@@ -1073,9 +1169,11 @@ final class ChargingManagerTests: XCTestCase {
     func testMagSafeLED_topUp_sendsOrange() {
         settings.controlMagSafeLED = true
         manager.helperVersion = HelperConstants.helperVersion
+        // Start top up, then evaluate with IOKit confirming charging
         manager.startTopUp()
-        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x04)),
-            "Top Up mode should set LED to orange")
+        manager.evaluateState(makeBatteryState(percentage: 50, isCharging: true))
+        XCTAssertEqual(manager.lastLEDColor, HelperConstants.ledOrange,
+            "Top Up with IOKit isCharging=true should have LED orange")
     }
 
     func testMagSafeLED_sailing_sendsGreen() {
@@ -1086,8 +1184,8 @@ final class ChargingManagerTests: XCTestCase {
 
         manager.evaluateState(makeBatteryState(percentage: 75))
         XCTAssertEqual(manager.mode, .sailing)
-        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x03)),
-            "Sailing mode should set LED to green (0x03)")
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: HelperConstants.ledGreen)),
+            "Sailing mode should set LED to green")
     }
 
     func testMagSafeLED_pausedMode_offWhenInactive() {
@@ -1096,8 +1194,8 @@ final class ChargingManagerTests: XCTestCase {
         manager.helperVersion = HelperConstants.helperVersion
         manager.evaluateState(makeBatteryState(percentage: 80))
         XCTAssertEqual(manager.mode, .paused)
-        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x01)),
-            "Paused mode with offWhenInactive should set LED off (0x01)")
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: HelperConstants.ledOff)),
+            "Paused mode with offWhenInactive should set LED off")
     }
 
     func testMagSafeLED_sailing_offWhenInactive() {
@@ -1109,8 +1207,8 @@ final class ChargingManagerTests: XCTestCase {
 
         manager.evaluateState(makeBatteryState(percentage: 75))
         XCTAssertEqual(manager.mode, .sailing)
-        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x01)),
-            "Sailing mode with offWhenInactive should set LED off (0x01)")
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: HelperConstants.ledOff)),
+            "Sailing mode with offWhenInactive should set LED off")
     }
 
     func testMagSafeLED_discharging_sendsOrange() {
@@ -1118,8 +1216,8 @@ final class ChargingManagerTests: XCTestCase {
         manager.helperVersion = HelperConstants.helperVersion
         manager.startDischarge()
         XCTAssertEqual(manager.mode, .discharging)
-        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: 0x04)),
-            "Discharging mode should set LED to orange (0x04)")
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: HelperConstants.ledOrange)),
+            "Discharging mode should set LED to orange")
     }
 
     func testMagSafeLED_oldHelper_noCalls() {
@@ -1153,6 +1251,25 @@ final class ChargingManagerTests: XCTestCase {
             if case .setMagSafeLED = $0 { return true }
             return false
         }), "Version 1.10.0 >= 1.1.0 — LED calls must be made (semantic compare)")
+    }
+
+    func testMagSafeLED_reconnect_resetsStaleCacheAndResends() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = HelperConstants.helperVersion
+
+        // Set LED to green (paused mode, IOKit not charging)
+        manager.evaluateState(makeBatteryState(percentage: 80))
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertEqual(manager.lastLEDColor, HelperConstants.ledGreen)
+        mock.clearCalls()
+
+        // Simulate helper reconnect: reset LED cache as connectToHelper does
+        manager.lastLEDColor = nil
+
+        // Re-evaluate — same state, but cache is cleared so LED should be re-sent
+        manager.evaluateState(makeBatteryState(percentage: 80))
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: HelperConstants.ledGreen)),
+            "After cache reset (simulating reconnect), LED should be re-sent")
     }
 
     // =========================================================================

@@ -33,6 +33,7 @@ final class ChargingManager: ObservableObject {
         didSet {
             if mode != oldValue {
                 log.info("Mode: \(oldValue.displayName) → \(self.mode.displayName)")
+                inhibitRetryCount = 0
                 updateMagSafeLED()
             }
         }
@@ -51,12 +52,21 @@ final class ChargingManager: ObservableObject {
     /// Internal for testability.
     var helperVersion: String?
 
-    /// Last LED color sent to avoid duplicate XPC calls
-    private(set) var lastLEDColor: UInt8?
+    /// Last LED color sent to avoid duplicate XPC calls.
+    /// Internal setter for testability (simulating helper reconnect).
+    internal(set) var lastLEDColor: UInt8?
 
     /// Timestamp of last inhibit send — used to debounce verification re-sends.
     /// Internal for testability.
     var lastInhibitTime: Date?
+
+    /// Number of verification re-sends in the current inhibit cycle.
+    /// Reset when IOKit confirms not charging or mode changes.
+    var inhibitRetryCount: Int = 0
+
+    /// Last known IOKit isCharging state — used by LED to reflect hardware truth
+    /// regardless of which evaluateState code path ran.
+    private(set) var lastIsCharging: Bool = false
 
     private convenience init() {
         self.init(settings: .shared, helper: HelperClient.shared, battery: .shared)
@@ -84,6 +94,17 @@ final class ChargingManager: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // React to settings changes (e.g. charge limit, sailing range) so the state
+        // machine re-evaluates immediately instead of waiting for the next battery poll.
+        // .receive(on:) defers to the next RunLoop iteration, after the new value is set.
+        settings.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.evaluateState(self.battery.batteryState)
+            }
+            .store(in: &cancellables)
+
         // Evaluate immediately — the Combine publisher delivers on next run loop,
         // but we need mode set before setupStatusItem() runs
         evaluateState(battery.batteryState)
@@ -99,25 +120,39 @@ final class ChargingManager: ObservableObject {
         if isHelperInstalled {
             let client = HelperClient.shared
             client.connect()
-            // Query the helper's detected API
-            client.getChargingAPI { [weak self] api in
-                Task { @MainActor in
-                    switch api {
-                    case "legacy": self?.chargingAPI = .legacy
-                    case "tahoe":  self?.chargingAPI = .tahoe
-                    default:       break
-                    }
+
+            // Auto-resync when helper restarts (crash recovery) or reconnects
+            client.onHelperRestarted = { [weak self] in
+                log.info("Helper restarted/reconnected — resyncing state")
+                self?.syncWithHelper()
+            }
+
+            syncWithHelper()
+        }
+    }
+
+    /// Query helper version/API and resync charging state.
+    /// Called on initial connection and after helper restarts.
+    private func syncWithHelper() {
+        let client = HelperClient.shared
+        client.getChargingAPI { [weak self] api in
+            Task { @MainActor in
+                switch api {
+                case "legacy": self?.chargingAPI = .legacy
+                case "tahoe":  self?.chargingAPI = .tahoe
+                default:       break
                 }
             }
-            // Query helper version for feature gating (e.g. MagSafe LED requires ≥1.1.0)
-            client.getVersion { [weak self] version in
-                Task { @MainActor in
-                    self?.helperVersion = version
-                    log.info("Helper version: \(version)")
-                    self?.updateMagSafeLED()
-                    // Resync charging state with the (re)connected helper
-                    self?.resyncChargingState()
-                }
+        }
+        client.getVersion { [weak self] version in
+            Task { @MainActor in
+                self?.helperVersion = version
+                log.info("Helper version: \(version)")
+                // Reset LED cache — helper may have restarted with default LED state
+                self?.lastLEDColor = nil
+                self?.updateMagSafeLED()
+                // Resync charging state with the (re)connected helper
+                self?.resyncChargingState()
             }
         }
     }
@@ -156,6 +191,9 @@ final class ChargingManager: ObservableObject {
               || state.timeToEmpty != nil || state.timeToFull != nil else {
             return  // Stay in current mode until real data arrives
         }
+
+        lastIsCharging = state.isCharging
+        defer { updateMagSafeLED() }
 
         // Not plugged in = on battery, nothing to control.
         // Exception: during force discharge, IOKit reports power source as "battery"
@@ -197,11 +235,8 @@ final class ChargingManager: ObservableObject {
             }
         }
 
-        // Top Up mode - charge to 100%
+        // Top Up mode — stay until unplugged (guard above) or user cancels
         if mode == .topUp {
-            if pct >= 100 {
-                // Stay at 100% until unplugged (handled above)
-            }
             return
         }
 
@@ -286,25 +321,37 @@ final class ChargingManager: ObservableObject {
         // Verification: system is the source of truth.
         // If we think charging is inhibited but IOKit still reports isCharging,
         // the SMC write may not have taken effect — re-send.
-        // Debounce: wait at least 5s after last inhibit for IOKit to catch up.
+        // IOKit can lag 15-30s on Apple Silicon before reflecting the new state,
+        // so debounce at 15s and limit to 3 retries to avoid unnecessary SMC writes.
         if (mode == .paused || mode == .sailing || mode == .heatProtection)
             && state.isCharging {
             let elapsed = lastInhibitTime.map { Date().timeIntervalSince($0) } ?? .infinity
-            if elapsed >= 5 {
-                log.warning("System still reports charging in \(self.mode.displayName) mode — re-sending inhibit")
+            if elapsed >= 15 && inhibitRetryCount < 3 {
+                inhibitRetryCount += 1
+                log.warning("IOKit still reports charging in \(self.mode.displayName) mode — re-sending inhibit (\(self.inhibitRetryCount)/3)")
                 inhibitCharging()
             }
+        } else if (mode == .paused || mode == .sailing || mode == .heatProtection)
+                    && !state.isCharging && inhibitRetryCount > 0 {
+            log.info("IOKit confirmed: charging stopped in \(self.mode.displayName) mode")
+            inhibitRetryCount = 0
         }
 
-        // Refresh LED — picks up settings changes without waiting for a mode transition.
-        // Cached (sendLEDColor skips if color unchanged), so no extra XPC calls normally.
-        updateMagSafeLED()
     }
 
     // MARK: - Actions
 
+    /// Whether SMC commands can be sent (helper installed and API detected)
+    private var canControlCharging: Bool {
+        isHelperInstalled && chargingAPI != .unknown
+    }
+
     /// Start Top Up - temporarily charge to 100%
     func startTopUp() {
+        guard canControlCharging else {
+            log.warning("Cannot start Top Up: \(self.controlUnavailableReason)")
+            return
+        }
         log.info("Top Up started at \(self.battery.batteryState.percentage)% (limit was \(self.settings.chargeLimit)%)")
 
         enableCharging()
@@ -323,6 +370,10 @@ final class ChargingManager: ObservableObject {
 
     /// Manually start discharge
     func startDischarge() {
+        guard canControlCharging else {
+            log.warning("Cannot start discharge: \(self.controlUnavailableReason)")
+            return
+        }
         log.info("Discharge started at \(self.battery.batteryState.percentage)%")
         forceDischarge(true)
         mode = .discharging
@@ -337,9 +388,19 @@ final class ChargingManager: ObservableObject {
 
     /// Manually pause charging at current level
     func pauseCharging() {
+        guard canControlCharging else {
+            log.warning("Cannot pause charging: \(self.controlUnavailableReason)")
+            return
+        }
         log.info("Charging paused manually at \(self.battery.batteryState.percentage)%")
         inhibitCharging()
         mode = .paused
+    }
+
+    private var controlUnavailableReason: String {
+        if !isHelperInstalled { return "helper not installed" }
+        if chargingAPI == .unknown { return "no charging API detected" }
+        return "unknown"
     }
 
     // MARK: - SMC Charging Control (via Helper)
@@ -355,7 +416,7 @@ final class ChargingManager: ObservableObject {
         lastInhibitTime = Date()
         helper.inhibitCharging { [weak self] success, error in
             if success {
-                log.info("Charging inhibited")
+                log.info("SMC: inhibit written — waiting for IOKit confirmation")
             } else {
                 log.error("Failed to inhibit charging: \(error ?? "unknown error")")
                 Task { @MainActor in self?.mode = .idle }
@@ -373,7 +434,7 @@ final class ChargingManager: ObservableObject {
 
         helper.enableCharging { [weak self] success, error in
             if success {
-                log.info("Charging enabled")
+                log.info("SMC: enable written")
             } else {
                 log.error("Failed to enable charging: \(error ?? "unknown error")")
                 Task { @MainActor in self?.mode = .idle }
@@ -401,7 +462,7 @@ final class ChargingManager: ObservableObject {
 
     // MARK: - Helper Resync
 
-    /// Re-send current mode's SMC commands after helper reconnects
+    /// Re-send current mode's SMC commands after helper reconnects.
     private func resyncChargingState() {
         log.info("Resyncing charging state after helper reconnect (mode: \(self.mode.displayName))")
         switch mode {
@@ -419,14 +480,16 @@ final class ChargingManager: ObservableObject {
 
     // MARK: - MagSafe LED
 
-    /// Update MagSafe LED to reflect current mode.
+    /// Update MagSafe LED to reflect current mode + IOKit truth.
+    /// Uses `lastIsCharging` (updated every evaluateState) so LED reflects
+    /// hardware reality, not just mode intent.
     /// Gated behind helper version check — calling setMagSafeLED on an old helper
     /// that doesn't implement it would disrupt the XPC connection.
     private func updateMagSafeLED() {
         guard settings.controlMagSafeLED else {
             // If disabled, reset to auto (only if we previously set something)
-            if lastLEDColor != nil && lastLEDColor != 0x00 {
-                sendLEDColor(0x00)
+            if lastLEDColor != nil && lastLEDColor != HelperConstants.ledAuto {
+                sendLEDColor(HelperConstants.ledAuto)
             }
             return
         }
@@ -436,14 +499,26 @@ final class ChargingManager: ObservableObject {
             return
         }
 
+        // LED reflects both mode intent AND IOKit truth:
+        // - charging/topUp/discharging → always orange (we're actively controlling)
+        // - inhibited modes → orange while IOKit still reports charging (transition),
+        //   then green/off once IOKit confirms charging actually stopped.
+        let isCharging = lastIsCharging
         let color: UInt8
-        switch mode {
-        case .charging, .topUp, .discharging:
-            color = 0x04  // orange — actively charging or discharging
-        case .paused, .sailing, .heatProtection, .calibrating:
-            color = settings.magSafeLEDOffWhenInactive ? 0x01 : 0x03  // off or green
-        case .onBattery, .idle:
-            color = 0x00  // auto — MagSafe not connected or unknown
+        if mode == .onBattery || mode == .idle {
+            color = HelperConstants.ledAuto
+        } else if mode == .discharging || mode == .charging || mode == .topUp {
+            color = HelperConstants.ledOrange
+        } else if isCharging {
+            color = HelperConstants.ledOrange  // IOKit still reports charging (transition)
+        } else {
+            // IOKit confirms not charging
+            switch mode {
+            case .paused, .sailing, .heatProtection, .calibrating:
+                color = settings.magSafeLEDOffWhenInactive ? HelperConstants.ledOff : HelperConstants.ledGreen
+            default:
+                color = HelperConstants.ledAuto
+            }
         }
 
         sendLEDColor(color)
@@ -467,13 +542,13 @@ final class ChargingManager: ObservableObject {
             if success {
                 log.info("Reset to defaults via helper")
             } else {
-                log.warning("Helper reset failed, attempting direct reset")
+                log.warning("Helper reset failed — charging may remain inhibited until helper recovers")
             }
         }
         // Reset LED to system default (only if helper supports it)
         if let version = helperVersion,
            version.isVersionAtLeast(HelperConstants.minVersionMagSafeLED) {
-            helper.setMagSafeLED(color: 0x00, completion: nil)
+            helper.setMagSafeLED(color: HelperConstants.ledAuto, completion: nil)
         }
         lastLEDColor = nil
         mode = .idle
