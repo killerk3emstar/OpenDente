@@ -214,8 +214,16 @@ final class BatteryService: ObservableObject {
             }
         }
 
-        // Battery power from voltage * current (positive = charging, negative = discharging)
-        if let v = data.voltage, let a = data.amperage {
+        // Battery power: prefer B0AP (direct hardware measurement in mW) over V*A calculation
+        if let val = smc.readKeyOptional("B0AP") {
+            if let f = val.floatValue, val.dataType.hasPrefix("flt") {
+                data.batteryPower = Double(f)
+            } else if let raw = val.int32Value {
+                data.batteryPower = Double(raw) / 1000.0  // mW -> W
+            }
+        }
+        // Fallback to V*A if B0AP unavailable
+        if data.batteryPower == nil, let v = data.voltage, let a = data.amperage {
             data.batteryPower = v * a
         }
 

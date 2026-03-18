@@ -136,6 +136,46 @@ final class SMCValueTests: XCTestCase {
         XCTAssertEqual(val.uint32Value, 0x01020304)
     }
 
+    // MARK: - Int32 (little-endian, signed)
+    // Used for: battery power (B0AP) in milliwatts
+
+    func testInt32_positiveBatteryPower() {
+        // +8500mW (charging) = 0x00002134
+        // Little-endian: [0x34, 0x21, 0x00, 0x00]
+        let raw = Int32(8500)
+        let u = UInt32(bitPattern: raw)
+        let bytes: [UInt8] = [UInt8(u & 0xFF), UInt8((u >> 8) & 0xFF),
+                              UInt8((u >> 16) & 0xFF), UInt8((u >> 24) & 0xFF)]
+        let val = makeValue(dataType: "si32", bytes: bytes, dataSize: 4)
+        XCTAssertEqual(val.int32Value, 8500)
+    }
+
+    func testInt32_negativeBatteryPower() {
+        // -18000mW (discharging/peak load) = 0xFFFFB9B0
+        let raw = Int32(-18000)
+        let u = UInt32(bitPattern: raw)
+        let bytes: [UInt8] = [UInt8(u & 0xFF), UInt8((u >> 8) & 0xFF),
+                              UInt8((u >> 16) & 0xFF), UInt8((u >> 24) & 0xFF)]
+        let val = makeValue(dataType: "si32", bytes: bytes, dataSize: 4)
+        XCTAssertEqual(val.int32Value, -18000)
+    }
+
+    func testInt32_zeroPower() {
+        let val = makeValue(dataType: "si32", bytes: [0x00, 0x00, 0x00, 0x00], dataSize: 4)
+        XCTAssertEqual(val.int32Value, 0)
+    }
+
+    func testInt32_convertToWatts() {
+        // B0AP gives mW, we divide by 1000 to get W
+        let raw = Int32(45300) // 45.3W charging
+        let u = UInt32(bitPattern: raw)
+        let bytes: [UInt8] = [UInt8(u & 0xFF), UInt8((u >> 8) & 0xFF),
+                              UInt8((u >> 16) & 0xFF), UInt8((u >> 24) & 0xFF)]
+        let val = makeValue(dataType: "si32", bytes: bytes, dataSize: 4)
+        let watts = Double(val.int32Value!) / 1000.0
+        XCTAssertEqual(watts, 45.3, accuracy: 0.01)
+    }
+
     // MARK: - UInt8
 
     func testUInt8_chargingInhibitFlag() {
