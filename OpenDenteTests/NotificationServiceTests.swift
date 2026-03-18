@@ -16,6 +16,10 @@ final class NotificationServiceTests: XCTestCase {
 
     override func tearDown() {
         settings.showNotifications = true
+        settings.notifyChargeLimitReached = true
+        settings.notifyTopUpComplete = true
+        settings.notifyHeatProtection = true
+        settings.notifyDischargeComplete = true
         service = nil
         super.tearDown()
     }
@@ -26,6 +30,18 @@ final class NotificationServiceTests: XCTestCase {
         settings.showNotifications = false
         service.send(.chargeLimitReached, settings: settings)
         XCTAssertNil(service.lastEvent, "Should not track event when notifications disabled")
+    }
+
+    func testSend_whenEventDisabled_doesNotTrack() {
+        settings.notifyHeatProtection = false
+        service.send(.heatProtection, settings: settings)
+        XCTAssertNil(service.lastEvent, "Should not track event when that event type is disabled")
+    }
+
+    func testSend_otherEventsStillWorkWhenOneDisabled() {
+        settings.notifyHeatProtection = false
+        service.send(.chargeLimitReached, settings: settings)
+        XCTAssertEqual(service.lastEvent, .chargeLimitReached, "Other events should still fire")
     }
 
     // MARK: - Anti-Spam

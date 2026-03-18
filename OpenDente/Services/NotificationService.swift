@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import UserNotifications
 import os.log
@@ -7,9 +8,23 @@ private let log = Logger(subsystem: "com.opendente.app", category: "Notification
 /// Sends macOS notifications for key charging events.
 /// Anti-spam: blocks the same event from firing twice in a row.
 @MainActor
-final class NotificationService {
+final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     static let shared = NotificationService()
+
+    override init() {
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
+    }
+
+    /// Show banner + play sound even when the app is frontmost.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
 
     enum Event: String, Equatable {
         case chargeLimitReached
@@ -23,17 +38,36 @@ final class NotificationService {
     var lastEvent: Event?
 
     func requestPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
-            if let error {
-                log.error("Notification permission error: \(error.localizedDescription)")
-            } else {
-                log.info("Notification permission: \(granted ? "granted" : "denied")")
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
+
+            guard settings.authorizationStatus == .notDetermined else {
+                if settings.authorizationStatus == .denied {
+                    log.info("Notification permission previously denied — user must enable in System Settings")
+                }
+                return
             }
+
+            // Menu bar apps (.accessory) can't show the permission dialog
+            // unless temporarily brought to the foreground as a regular app.
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+
+            do {
+                let granted = try await center.requestAuthorization(options: [.alert, .sound])
+                log.info("Notification permission: \(granted ? "granted" : "denied")")
+            } catch {
+                log.error("Notification permission error: \(error.localizedDescription)")
+            }
+
+            NSApp.setActivationPolicy(.accessory)
         }
     }
 
     func send(_ event: Event, settings: AppSettings) {
         guard settings.showNotifications else { return }
+        guard isEnabled(event, settings: settings) else { return }
         guard event != lastEvent else { return }
         lastEvent = event
 
@@ -68,5 +102,14 @@ final class NotificationService {
 
     func clearLastEvent() {
         lastEvent = nil
+    }
+
+    private func isEnabled(_ event: Event, settings: AppSettings) -> Bool {
+        switch event {
+        case .chargeLimitReached: return settings.notifyChargeLimitReached
+        case .topUpComplete:      return settings.notifyTopUpComplete
+        case .heatProtection:     return settings.notifyHeatProtection
+        case .dischargeComplete:  return settings.notifyDischargeComplete
+        }
     }
 }

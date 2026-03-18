@@ -1,5 +1,6 @@
 import SwiftUI
 import ServiceManagement
+import UserNotifications
 import os.log
 
 /// Settings window with tabbed interface
@@ -11,6 +12,9 @@ struct SettingsView: View {
 
             ChargingTab()
                 .tabItem { Label("Charging", systemImage: "bolt.fill") }
+
+            NotificationsTab()
+                .tabItem { Label("Notifications", systemImage: "bell") }
 
             StatusBarTab()
                 .tabItem { Label("Status Bar", systemImage: "menubar.rectangle") }
@@ -38,8 +42,6 @@ struct GeneralTab: View {
                     .onChange(of: settings.launchAtLogin) { _, newValue in
                         setLaunchAtLogin(newValue)
                     }
-
-                Toggle("Show Notifications", isOn: $settings.showNotifications)
             }
 
             Section("Privileged Helper") {
@@ -90,6 +92,53 @@ struct GeneralTab: View {
             Logger(subsystem: "com.opendente.app", category: "Settings").error("Failed to set launch at login: \(error.localizedDescription)")
         }
     }
+}
+
+// MARK: - Notifications Tab
+
+struct NotificationsTab: View {
+    @ObservedObject var settings = AppSettings.shared
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Enable Notifications", isOn: $settings.showNotifications)
+            }
+
+            Section("Events") {
+                Toggle("Charge Limit Reached", isOn: $settings.notifyChargeLimitReached)
+                Toggle("Top Up Complete (100%)", isOn: $settings.notifyTopUpComplete)
+                Toggle("Heat Protection Active", isOn: $settings.notifyHeatProtection)
+                Toggle("Discharge Complete", isOn: $settings.notifyDischargeComplete)
+            }
+            .disabled(!settings.showNotifications)
+
+            #if DEBUG
+            Section("Test") {
+                Button("Send Test Notification") {
+                    sendTestNotification()
+                }
+            }
+            #endif
+        }
+        .formStyle(.grouped)
+    }
+
+    #if DEBUG
+    private func sendTestNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "OpenDente Test"
+        content.body = "Notifications are working!"
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "com.opendente.test.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+    #endif
 }
 
 // MARK: - Charging Tab

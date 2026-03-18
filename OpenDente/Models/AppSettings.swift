@@ -65,6 +65,10 @@ final class AppSettings: ObservableObject {
     @AppStorage("launchAtLogin") var launchAtLogin: Bool = false
     @AppStorage("useHardwareBatteryPercentage") var useHardwareBatteryPercentage: Bool = false
     @AppStorage("showNotifications") var showNotifications: Bool = true
+    @AppStorage("notifyChargeLimitReached") var notifyChargeLimitReached: Bool = true
+    @AppStorage("notifyTopUpComplete") var notifyTopUpComplete: Bool = true
+    @AppStorage("notifyHeatProtection") var notifyHeatProtection: Bool = true
+    @AppStorage("notifyDischargeComplete") var notifyDischargeComplete: Bool = true
 
     // MARK: - Popover Detail Items
 
