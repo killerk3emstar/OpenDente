@@ -1,5 +1,28 @@
 import Foundation
 
+// MARK: - Adapter Types
+
+struct USBPDProfile: Equatable {
+    let voltage: Double  // V
+    let current: Double  // A
+    var watts: Int { Int(round(voltage * current)) }
+}
+
+struct AdapterInfo: Equatable {
+    let name: String              // "96W USB-C Power Adapter" (Name key)
+    let description: String?      // "pd charger" (Description key)
+    let manufacturer: String?     // "Apple Inc."
+    let model: String?            // "0x7002"
+    let watts: Int                // 94
+    let voltage: Double           // V — live from VD0R or negotiated AdapterVoltage
+    let current: Double           // A — live from ID0R or negotiated Current
+    let serial: String?           // "C4H441203C3PM0WBF"
+    let firmware: String?         // "01090058"
+    let isWireless: Bool
+    let usbPDProfiles: [USBPDProfile]
+    let activeProfileIndex: Int?  // UsbHvcHvcIndex
+}
+
 /// Complete snapshot of battery state at a point in time
 struct BatteryState: Equatable {
     // MARK: - Core
@@ -16,11 +39,13 @@ struct BatteryState: Equatable {
 
     // MARK: - Power
     let temperature: Double?         // Celsius
-    let voltage: Double?             // Volts
-    let amperage: Double?            // Amps (positive = charging, negative = discharging)
+    let voltage: Double?             // Volts (battery)
+    let amperage: Double?            // Amps (battery, positive = charging, negative = discharging)
     let systemPower: Double?         // Watts - total system draw
     let adapterPower: Double?        // Watts - power from adapter
+    let adapterInfo: AdapterInfo?     // Rich charger info from IORegistry + SMC
     let batteryPower: Double?        // Watts - power to/from battery
+    let notChargingReason: UInt64?   // IORegistry ChargerData.NotChargingReason (0 = normal)
 
     // MARK: - Time
     let timeToEmpty: Int?            // Minutes
@@ -73,7 +98,8 @@ struct BatteryState: Equatable {
         percentage: 0, hardwarePercentage: nil, isCharging: false, isPluggedIn: false,
         currentCapacity: nil, maxCapacity: nil, designCapacity: nil, cycleCount: nil,
         temperature: nil, voltage: nil, amperage: nil,
-        systemPower: nil, adapterPower: nil, batteryPower: nil,
+        systemPower: nil, adapterPower: nil, adapterInfo: nil,
+        batteryPower: nil, notChargingReason: nil,
         timeToEmpty: nil, timeToFull: nil
     )
 }
@@ -189,40 +215,64 @@ enum PopoverDetailItem: String, CaseIterable, Codable, Identifiable {
     case timeRemaining
     case systemPower
     case adapterPower
+    case adapterName
+    case adapterManufacturer
+    case adapterModel
+    case adapterSerial
+    case adapterVoltage
+    case adapterCurrent
     case voltage
     case amperage
     case currentCapacity
+    case designCapacity
     case batteryPower
+    case notChargingReason
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .temperature:      return "Temperature"
-        case .batteryHealth:    return "Battery Health"
-        case .cycleCount:       return "Cycle Count"
-        case .timeRemaining:    return "Time Remaining"
-        case .systemPower:      return "System Power"
-        case .adapterPower:     return "Adapter Power"
-        case .voltage:          return "Voltage"
-        case .amperage:         return "Current (Amps)"
-        case .currentCapacity:  return "Capacity"
-        case .batteryPower:     return "Battery Power"
+        case .temperature:         return "Temperature"
+        case .batteryHealth:       return "Battery Health"
+        case .cycleCount:          return "Cycle Count"
+        case .timeRemaining:       return "Time Remaining"
+        case .systemPower:         return "System Power"
+        case .adapterPower:        return "Adapter Power"
+        case .adapterName:         return "Adapter"
+        case .adapterManufacturer: return "Manufacturer"
+        case .adapterModel:       return "Adapter Model"
+        case .adapterSerial:       return "Adapter Serial"
+        case .adapterVoltage:      return "Adapter Voltage"
+        case .adapterCurrent:      return "Adapter Current"
+        case .voltage:             return "Battery Voltage"
+        case .amperage:            return "Battery Current"
+        case .currentCapacity:     return "Capacity"
+        case .designCapacity:      return "Design Capacity"
+        case .batteryPower:        return "Battery Power"
+        case .notChargingReason:   return "Not Charging Reason"
         }
     }
 
     var icon: String {
         switch self {
-        case .temperature:      return "thermometer.medium"
-        case .batteryHealth:    return "heart.fill"
-        case .cycleCount:       return "arrow.triangle.2.circlepath"
-        case .timeRemaining:    return "clock"
-        case .systemPower:      return "bolt.fill"
-        case .adapterPower:     return "powerplug.fill"
-        case .voltage:          return "minus.plus.batteryblock.fill"
-        case .amperage:         return "arrow.left.arrow.right"
-        case .currentCapacity:  return "battery.75percent"
-        case .batteryPower:     return "battery.100percent.bolt"
+        case .temperature:         return "thermometer.medium"
+        case .batteryHealth:       return "heart.fill"
+        case .cycleCount:          return "arrow.triangle.2.circlepath"
+        case .timeRemaining:       return "clock"
+        case .systemPower:         return "bolt.fill"
+        case .adapterPower:        return "powerplug.fill"
+        case .adapterName:         return "powerplug.fill"
+        case .adapterManufacturer: return "building.2"
+        case .adapterModel:       return "cpu"
+        case .adapterSerial:       return "number"
+        case .adapterVoltage:      return "bolt.circle"
+        case .adapterCurrent:      return "bolt.horizontal"
+        case .voltage:             return "minus.plus.batteryblock.fill"
+        case .amperage:            return "arrow.left.arrow.right"
+        case .currentCapacity:     return "battery.75percent"
+        case .designCapacity:      return "battery.100percent"
+        case .batteryPower:        return "battery.100percent.bolt"
+        case .notChargingReason:   return "questionmark.circle"
         }
     }
 

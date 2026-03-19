@@ -303,4 +303,34 @@ final class DisplayLogicTests: XCTestCase {
             "Unknown charging API must prevent discharge — no SMC keys to write"
         )
     }
+
+    // MARK: - adapterVisible
+
+    func testAdapterVisible_pluggedIn_true() {
+        XCTAssertTrue(PopoverView.adapterVisible(isPluggedIn: true, mode: .charging))
+        XCTAssertTrue(PopoverView.adapterVisible(isPluggedIn: true, mode: .paused))
+        XCTAssertTrue(PopoverView.adapterVisible(isPluggedIn: true, mode: .sailing))
+    }
+
+    func testAdapterVisible_unplugged_false() {
+        XCTAssertFalse(PopoverView.adapterVisible(isPluggedIn: false, mode: .onBattery))
+        XCTAssertFalse(PopoverView.adapterVisible(isPluggedIn: false, mode: .idle))
+    }
+
+    func testAdapterVisible_forceDischarge_trueEvenWhenNotPluggedIn() {
+        // During force discharge, IOKit may report isPluggedIn=false
+        // but charger is physically connected — adapter info must stay visible
+        XCTAssertTrue(PopoverView.adapterVisible(isPluggedIn: false, mode: .discharging))
+        XCTAssertTrue(PopoverView.adapterVisible(isPluggedIn: true, mode: .discharging))
+    }
+
+    func testAdapterVisible_unplugged_allNonDischargeModes_false() {
+        let modes: [ChargingMode] = [.charging, .paused, .sailing, .topUp, .calibrating, .heatProtection, .onBattery, .idle]
+        for mode in modes {
+            XCTAssertFalse(
+                PopoverView.adapterVisible(isPluggedIn: false, mode: mode),
+                "Adapter should be hidden when unplugged in mode \(mode)"
+            )
+        }
+    }
 }

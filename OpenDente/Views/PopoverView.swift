@@ -10,6 +10,16 @@ struct PopoverView: View {
         battery.batteryState.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
     }
 
+    private var adapterVisible: Bool {
+        Self.adapterVisible(isPluggedIn: battery.batteryState.isPluggedIn, mode: charging.mode)
+    }
+
+    /// Adapter details show when charger is connected — including during force discharge
+    /// where isPluggedIn may be false (IOKit reports battery source) but charger is physically present.
+    static func adapterVisible(isPluggedIn: Bool, mode: ChargingMode) -> Bool {
+        isPluggedIn || mode == .discharging
+    }
+
     private var canDischarge: Bool {
         Self.canDischarge(
             isPluggedIn: battery.batteryState.isPluggedIn,
@@ -263,20 +273,47 @@ struct PopoverView: View {
             guard let power = state.systemPower, power > 0 else { return nil }
             return ("System Power", String(format: "%.1f W", power))
         case .adapterPower:
-            guard let adapter = state.adapterPower, adapter > 0 else { return nil }
-            return ("Adapter Power", String(format: "%.1f W", adapter))
+            guard adapterVisible, let power = state.adapterPower, power > 0 else { return nil }
+            if let max = state.adapterInfo?.watts, max > 0 {
+                return ("Adapter Power", String(format: "%.1f W of %d W", power, max))
+            }
+            return ("Adapter Power", String(format: "%.1f W", power))
+        case .adapterName:
+            guard adapterVisible, let info = state.adapterInfo else { return nil }
+            return ("Adapter", info.name)
+        case .adapterManufacturer:
+            guard adapterVisible, let mfr = state.adapterInfo?.manufacturer else { return nil }
+            return ("Manufacturer", mfr)
+        case .adapterModel:
+            guard adapterVisible, let model = state.adapterInfo?.model else { return nil }
+            return ("Model", model)
+        case .adapterSerial:
+            guard adapterVisible, let serial = state.adapterInfo?.serial else { return nil }
+            return ("Serial", serial)
+        case .adapterVoltage:
+            guard adapterVisible, let info = state.adapterInfo else { return nil }
+            return ("Adapter Voltage", String(format: "%.2f V", info.voltage))
+        case .adapterCurrent:
+            guard adapterVisible, let info = state.adapterInfo else { return nil }
+            return ("Adapter Current", String(format: "%.3f A", info.current))
         case .voltage:
             guard let voltage = state.voltage else { return nil }
-            return ("Voltage", String(format: "%.2f V", voltage))
+            return ("Battery Voltage", String(format: "%.2f V", voltage))
         case .amperage:
             guard let amperage = state.amperage else { return nil }
-            return ("Current", String(format: "%.3f A", amperage))
+            return ("Battery Current", String(format: "%.3f A", amperage))
         case .currentCapacity:
             guard let current = state.currentCapacity, let max = state.maxCapacity else { return nil }
             return ("Capacity", "\(current) / \(max) mAh")
+        case .designCapacity:
+            guard let design = state.designCapacity else { return nil }
+            return ("Design Capacity", "\(design) mAh")
         case .batteryPower:
-            guard let power = state.batteryPower, abs(power) > 0.1 else { return nil }
+            guard let power = state.batteryPower else { return nil }
             return ("Battery Power", String(format: "%.1f W", power))
+        case .notChargingReason:
+            guard let reason = state.notChargingReason, reason != 0 else { return nil }
+            return ("Not Charging", String(format: "0x%016llX", reason))
         }
     }
 

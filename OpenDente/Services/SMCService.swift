@@ -332,7 +332,12 @@ final class SMCService: @unchecked Sendable {
         }
 
         if outputData.result != 0 {
-            smcLog.error("SMC result error: result=\(outputData.result) key=\(keyStr) cmd=\(input.data8)")
+            // 132 (0x84) = key not found — expected for optional keys, don't spam logs
+            if outputData.result == 132 {
+                smcLog.debug("SMC key not found: \(keyStr)")
+            } else {
+                smcLog.error("SMC result error: result=\(outputData.result) key=\(keyStr) cmd=\(input.data8)")
+            }
             throw SMCError.readFailed(keyStr, outputData.result)
         }
 

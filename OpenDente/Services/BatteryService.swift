@@ -67,6 +67,7 @@ final class BatteryService: ObservableObject {
     func update() {
         let ioKitState = readIOKitPowerSource()
         let smcState = smcAvailable ? readSMCData() : SMCData()
+        let ioRegState = readIORegistryBattery()
 
         let hwPercent: Int? = {
             guard let rem = smcState.remainingCapacity,
@@ -79,6 +80,26 @@ final class BatteryService: ObservableObject {
             guard ratio <= 1.1 else { return nil }  // >110% means garbage data
             return max(0, min(100, Int(round(ratio * 100.0))))
         }()
+
+        // Always build AdapterInfo from IORegistry when available.
+        // SMC VD0R/ID0R override negotiated voltage/current with live readings.
+        // Views decide visibility using isPluggedIn + mode (IORegistry caches stale data after unplug).
+        let adapterInfo: AdapterInfo? = ioRegState.adapterInfo.map { info in
+            AdapterInfo(
+                name: info.name,
+                description: info.description,
+                manufacturer: info.manufacturer,
+                model: info.model,
+                watts: info.watts,
+                voltage: smcState.adapterVoltage ?? info.voltage,
+                current: smcState.adapterCurrent ?? info.current,
+                serial: info.serial,
+                firmware: info.firmware,
+                isWireless: info.isWireless,
+                usbPDProfiles: info.usbPDProfiles,
+                activeProfileIndex: info.activeProfileIndex
+            )
+        }
 
         let state = BatteryState(
             percentage: ioKitState.percentage,
@@ -95,7 +116,9 @@ final class BatteryService: ObservableObject {
             amperage: smcState.amperage,
             systemPower: smcState.systemPower,
             adapterPower: smcState.adapterPower,
+            adapterInfo: adapterInfo,
             batteryPower: smcState.batteryPower,
+            notChargingReason: ioRegState.notChargingReason,
             timeToEmpty: ioKitState.timeToEmpty,
             timeToFull: ioKitState.timeToFull
         )
@@ -158,6 +181,8 @@ final class BatteryService: ObservableObject {
         var amperage: Double?
         var systemPower: Double?
         var adapterPower: Double?
+        var adapterVoltage: Double?  // VD0R (live adapter voltage)
+        var adapterCurrent: Double?  // ID0R (live adapter current)
         var batteryPower: Double?
         var cycleCount: Int?
         var remainingCapacity: Int?
@@ -214,6 +239,24 @@ final class BatteryService: ObservableObject {
             }
         }
 
+        // Adapter voltage: VD0R (Apple Silicon — flt or uint16 mV)
+        if let val = smc.readKeyOptional("VD0R") {
+            if val.dataType.hasPrefix("flt"), let f = val.floatValue {
+                data.adapterVoltage = Double(f)
+            } else if let raw = val.uint16Value {
+                data.adapterVoltage = Double(raw) / 1000.0
+            }
+        }
+
+        // Adapter current: ID0R (Apple Silicon — flt or uint16 mA)
+        if let val = smc.readKeyOptional("ID0R") {
+            if val.dataType.hasPrefix("flt"), let f = val.floatValue {
+                data.adapterCurrent = Double(f)
+            } else if let raw = val.uint16Value {
+                data.adapterCurrent = Double(raw) / 1000.0
+            }
+        }
+
         // Battery power: prefer B0AP (direct hardware measurement in mW) over V*A calculation
         if let val = smc.readKeyOptional("B0AP") {
             if let f = val.floatValue, val.dataType.hasPrefix("flt") {
@@ -255,6 +298,89 @@ final class BatteryService: ObservableObject {
         }
 
         return data
+    }
+
+    // MARK: - IORegistry (adapter details, not-charging reason)
+
+    private func readIORegistryBattery() -> (adapterInfo: AdapterInfo?, notChargingReason: UInt64?) {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+        guard service != IO_OBJECT_NULL else { return (nil, nil) }
+        defer { IOObjectRelease(service) }
+
+        // Read only the keys we need — NOT CreateCFProperties which copies the entire 16KB+ dict
+        // (PortControllerInfo alone is 9KB of data we never use)
+        let adapterDict = IORegistryEntryCreateCFProperty(service, "AdapterDetails" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? [String: Any]
+        let chargerDict = IORegistryEntryCreateCFProperty(service, "ChargerData" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? [String: Any]
+
+        // Parse AdapterDetails
+        var adapterInfo: AdapterInfo?
+        if let adapter = adapterDict {
+            let name = adapter["Name"] as? String
+                ?? adapter["Description"] as? String
+                ?? "Unknown Adapter"
+            let description = adapter["Description"] as? String
+            let manufacturer = adapter["Manufacturer"] as? String
+            let model = adapter["Model"] as? String
+            let watts = adapter["Watts"] as? Int ?? 0
+
+            // AdapterVoltage in mV, Current in mA
+            let voltage: Double = {
+                if let v = adapter["AdapterVoltage"] as? Int { return Double(v) / 1000.0 }
+                return 0
+            }()
+            let current: Double = {
+                if let a = adapter["Current"] as? Int { return Double(a) / 1000.0 }
+                return 0
+            }()
+
+            let serial = adapter["SerialString"] as? String
+            let firmware = adapter["FwVersion"] as? String
+            let isWireless = adapter["IsWireless"] as? Bool ?? false
+
+            // USB-PD profiles (keys: MaxVoltage/MaxCurrent in mV/mA)
+            var profiles: [USBPDProfile] = []
+            if let menu = adapter["UsbHvcMenu"] as? [[String: Any]] {
+                for entry in menu {
+                    if let v = entry["MaxVoltage"] as? Int, let a = entry["MaxCurrent"] as? Int {
+                        profiles.append(USBPDProfile(
+                            voltage: Double(v) / 1000.0,
+                            current: Double(a) / 1000.0
+                        ))
+                    }
+                }
+            }
+            let activeIndex = adapter["UsbHvcHvcIndex"] as? Int
+
+            adapterInfo = AdapterInfo(
+                name: name,
+                description: description,
+                manufacturer: manufacturer,
+                model: model,
+                watts: watts,
+                voltage: voltage,
+                current: current,
+                serial: serial,
+                firmware: firmware,
+                isWireless: isWireless,
+                usbPDProfiles: profiles,
+                activeProfileIndex: activeIndex
+            )
+        }
+
+        // NotChargingReason from ChargerData (CF bridges as Int or UInt64)
+        var notChargingReason: UInt64?
+        if let chargerData = chargerDict,
+           let raw = chargerData["NotChargingReason"] {
+            if let val = raw as? UInt64 {
+                notChargingReason = val
+            } else if let val = raw as? Int {
+                notChargingReason = UInt64(bitPattern: Int64(val))
+            }
+        }
+
+        return (adapterInfo, notChargingReason)
     }
 
     // MARK: - Smart Polling

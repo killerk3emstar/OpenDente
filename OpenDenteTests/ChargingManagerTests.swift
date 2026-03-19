@@ -92,7 +92,9 @@ func makeBatteryState(
         amperage: nil,
         systemPower: nil,
         adapterPower: adapterPower,
+        adapterInfo: nil,
         batteryPower: nil,
+        notChargingReason: nil,
         timeToEmpty: timeToEmpty,
         timeToFull: timeToFull
     )

@@ -420,23 +420,83 @@ struct BatteryInfoTab: View {
                              warn: { $0 < -20 || $0 > 100 })
             }
 
-            Section("Power") {
+            Section("Battery Power") {
                 infoRow("Source", value: state.powerSource)
-                validatedRow("Voltage", raw: state.voltage,
+                validatedRow("Battery Voltage", raw: state.voltage,
                              format: { String(format: "%.2f V", $0) },
                              warn: { $0 < 1 || $0 > 30 })
-                validatedRow("Current", raw: state.amperage,
-                             format: { String(format: "%.2f A", $0) },
+                validatedRow("Battery Current", raw: state.amperage,
+                             format: { String(format: "%.3f A", $0) },
                              warn: { abs($0) > 10 })
                 validatedRow("Battery Power", raw: state.batteryPower,
                              format: { String(format: "%.1f W", $0) },
                              warn: { abs($0) > 200 })
+            }
+
+            Section("System Power") {
                 validatedRow("System Power", raw: state.systemPower,
                              format: { String(format: "%.1f W", $0) },
                              warn: { $0 < 0 || $0 > 200 })
                 validatedRow("Adapter Power", raw: state.adapterPower,
                              format: { String(format: "%.1f W", $0) },
                              warn: { $0 < 0 || $0 > 200 })
+            }
+
+            if state.isPluggedIn || charging.mode == .discharging, let adapter = state.adapterInfo {
+                Section("Adapter") {
+                    infoRow("Name", value: adapter.name)
+                    if let desc = adapter.description {
+                        infoRow("Description", value: desc)
+                    }
+                    if let mfr = adapter.manufacturer {
+                        infoRow("Manufacturer", value: mfr)
+                    }
+                    if let model = adapter.model {
+                        infoRow("Model", value: model)
+                    }
+                    infoRow("Wattage", value: "\(adapter.watts) W")
+                    validatedRow("Voltage", raw: adapter.voltage,
+                                 format: { String(format: "%.2f V", $0) },
+                                 warn: { $0 < 1 || $0 > 30 })
+                    validatedRow("Current", raw: adapter.current,
+                                 format: { String(format: "%.3f A", $0) },
+                                 warn: { abs($0) > 10 })
+                    if !adapter.usbPDProfiles.isEmpty {
+                        infoRow("Protocol", value: "USB-PD")
+                    }
+                    if let serial = adapter.serial {
+                        infoRow("Serial", value: serial)
+                    }
+                    if let firmware = adapter.firmware {
+                        infoRow("Firmware", value: firmware)
+                    }
+                    if adapter.isWireless {
+                        infoRow("Wireless", value: "Yes")
+                    }
+                }
+
+                if !adapter.usbPDProfiles.isEmpty {
+                    Section("USB-PD Profiles") {
+                        ForEach(Array(adapter.usbPDProfiles.enumerated()), id: \.offset) { index, profile in
+                            HStack {
+                                Text(String(format: "%.0fV \u{00D7} %.2fA (%dW)",
+                                            profile.voltage, profile.current, profile.watts))
+                                    .font(.system(.body, design: .monospaced))
+                                Spacer()
+                                if index == adapter.activeProfileIndex {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let reason = state.notChargingReason, reason != 0 {
+                    Section {
+                        infoRow("Not Charging Reason", value: String(format: "0x%016llX", reason))
+                    }
+                }
             }
 
             Section("Control") {
