@@ -69,16 +69,23 @@ final class BatteryService: ObservableObject {
         let smcState = smcAvailable ? readSMCData() : SMCData()
         let ioRegState = readIORegistryBattery()
 
+        // Hardware SoC: B0RM/B0FC gives the raw fuel gauge percentage.
+        // BUIC is "Battery UI Charge" — the smoothed value macOS shows, same as IOKit.
+        // BRSC is "Battery Remaining State of Charge" (ui16, high byte = %).
+        // We want the raw ratio for an independent reading.
         let hwPercent: Int? = {
-            guard let rem = smcState.remainingCapacity,
-                  let full = smcState.fullChargeCapacity,
-                  full > 0, rem >= 0
-            else { return nil }
-            // B0RM can slightly exceed B0FC due to measurement noise — clamp to 0-100.
-            // Reject obviously wrong values (e.g. byte-swapped garbage) to fall back to macOS %.
-            let ratio = Double(rem) / Double(full)
-            guard ratio <= 1.1 else { return nil }  // >110% means garbage data
-            return max(0, min(100, Int(round(ratio * 100.0))))
+            // Primary: raw capacity ratio from fuel gauge
+            if let rem = smcState.remainingCapacity,
+               let full = smcState.fullChargeCapacity,
+               full > 0, rem >= 0 {
+                let ratio = Double(rem) / Double(full)
+                if ratio <= 1.1 {
+                    return max(0, min(100, Int(round(ratio * 100.0))))
+                }
+            }
+            // Fallback: BRSC (if available)
+            if let brsc = smcState.brscPercentage { return brsc }
+            return nil
         }()
 
         // Always build AdapterInfo from IORegistry when available.
@@ -106,8 +113,8 @@ final class BatteryService: ObservableObject {
             hardwarePercentage: hwPercent,
             isCharging: ioKitState.isCharging,
             isPluggedIn: ioKitState.isPluggedIn,
-            // Use B0RM for currentCapacity only when hardware % is valid (same sanity checks)
-            currentCapacity: hwPercent != nil ? smcState.remainingCapacity : smcState.fullChargeCapacity.map { $0 * ioKitState.percentage / 100 },
+            // B0RM for mAh display when available, otherwise estimate from B0FC
+            currentCapacity: smcState.remainingCapacity ?? smcState.fullChargeCapacity.map { $0 * ioKitState.percentage / 100 },
             maxCapacity: smcState.fullChargeCapacity,
             designCapacity: smcState.designCapacity,
             cycleCount: smcState.cycleCount ?? ioKitState.cycleCount,
@@ -185,6 +192,8 @@ final class BatteryService: ObservableObject {
         var adapterCurrent: Double?  // ID0R (live adapter current)
         var batteryPower: Double?
         var cycleCount: Int?
+        var buicPercentage: Int?        // BUIC: UI-smoothed SoC (same as macOS %)
+        var brscPercentage: Int?        // BRSC: Battery Remaining State of Charge
         var remainingCapacity: Int?
         var fullChargeCapacity: Int?
         var designCapacity: Int?
@@ -273,6 +282,21 @@ final class BatteryService: ObservableObject {
         // Cycle count
         if let raw = smc.readUInt16("B0CT") {
             data.cycleCount = Int(raw)
+        }
+
+        // BUIC: "Battery UI Charge" — smoothed percentage macOS shows to users.
+        // Kept for diagnostics, but NOT used as hardware SoC (it matches IOKit exactly).
+        if let raw = smc.readUInt8("BUIC"), raw <= 100 {
+            data.buicPercentage = Int(raw)
+        }
+
+        // BRSC: "Battery Remaining State of Charge" — ui16, high byte = percentage.
+        // May not exist on all Apple Silicon models.
+        if let raw = smc.readUInt16("BRSC") {
+            let pct = Int(raw >> 8)
+            if pct >= 0 && pct <= 100 {
+                data.brscPercentage = pct
+            }
         }
 
         // Capacity

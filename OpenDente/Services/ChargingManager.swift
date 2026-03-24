@@ -202,6 +202,9 @@ final class ChargingManager: ObservableObject {
             if mode == .topUp {
                 log.info("Top Up ended: unplugged at \(state.percentage)%")
             }
+            // Clean slate — no pending inhibit verification on battery
+            lastInhibitTime = nil
+            inhibitRetryCount = 0
             mode = .onBattery
             return
         }
@@ -266,32 +269,35 @@ final class ChargingManager: ObservableObject {
 
         let limit = settings.chargeLimit
 
-        // Sailing mode logic
+        // Sailing mode = hysteresis to prevent micro-cycling (80→79→charge→80→…).
+        // Two asymmetric thresholds:
+        //   Stop charging at:  limit (e.g. 80%)
+        //   Start charging at: lowerBound (e.g. 70%) — only if sailing enabled
+        // Sailing is entered from .paused/.heatProtection (dropping from above)
+        // or from .onBattery/.idle (plug-in/app start within range).
+        // NEVER from .charging — that would cut off a charge cycle before reaching the limit.
         if settings.sailingModeEnabled {
             let lowerBound = settings.sailingLowerBound
 
             if pct >= limit {
-                // At or above limit - pause charging
                 if mode != .paused {
                     log.info("Limit reached: \(pct)% ≥ \(limit)% → paused")
-                    // Only send SMC write if charging isn't already inhibited
                     if mode != .sailing && mode != .heatProtection {
                         inhibitCharging()
                     }
                     mode = .paused
                 }
             } else if pct >= lowerBound {
-                // In sailing range — don't charge, coast on adapter power
-                if mode != .sailing {
+                if mode == .charging {
+                    // Keep charging toward limit — don't interrupt
+                } else if mode != .sailing {
                     log.info("Sailing: \(pct)% in range \(lowerBound)–\(limit)%")
-                    // Only send SMC write if charging isn't already inhibited
-                    if mode != .paused {
+                    if mode != .paused && mode != .heatProtection {
                         inhibitCharging()
                     }
                     mode = .sailing
                 }
             } else {
-                // Below sailing range — charge back up to limit
                 if mode != .charging {
                     log.info("Below range: \(pct)% < \(lowerBound)% → charging to \(limit)%")
                     enableCharging()
@@ -299,12 +305,11 @@ final class ChargingManager: ObservableObject {
                 }
             }
         } else {
-            // No sailing mode - simple limit
+            // No sailing mode — simple limit
             if pct >= limit {
                 if mode != .paused {
                     log.info("Limit reached: \(pct)% ≥ \(limit)% → paused")
-                    // Only send SMC write if charging isn't already inhibited
-                    if mode != .sailing && mode != .heatProtection {
+                    if mode != .heatProtection {
                         inhibitCharging()
                     }
                     mode = .paused
@@ -329,18 +334,26 @@ final class ChargingManager: ObservableObject {
         // the SMC write may not have taken effect — re-send.
         // IOKit can lag 15-30s on Apple Silicon before reflecting the new state,
         // so debounce at 15s and limit to 3 retries to avoid unnecessary SMC writes.
+        let inhibitElapsed = lastInhibitTime.map { Date().timeIntervalSince($0) } ?? .infinity
         if (mode == .paused || mode == .sailing || mode == .heatProtection)
             && state.isCharging {
-            let elapsed = lastInhibitTime.map { Date().timeIntervalSince($0) } ?? .infinity
-            if elapsed >= 15 && inhibitRetryCount < 3 {
+            if inhibitElapsed >= 15 && inhibitRetryCount < 3 {
                 inhibitRetryCount += 1
                 log.warning("IOKit still reports charging in \(self.mode.displayName) mode — re-sending inhibit (\(self.inhibitRetryCount)/3)")
                 inhibitCharging()
             }
         } else if (mode == .paused || mode == .sailing || mode == .heatProtection)
-                    && !state.isCharging && inhibitRetryCount > 0 {
-            log.info("IOKit confirmed: charging stopped in \(self.mode.displayName) mode")
+                    && !state.isCharging && lastInhibitTime != nil
+                    && inhibitElapsed >= 2 {
+            // Require ≥2s since inhibit write to avoid confirming in the same evaluateState
+            // call that sent the inhibit (e.g. cable plug with stale SMC inhibit).
+            if inhibitRetryCount > 0 {
+                log.info("IOKit confirmed: charging stopped in \(self.mode.displayName) mode (after \(self.inhibitRetryCount) retries)")
+            } else {
+                log.info("IOKit confirmed: charging stopped in \(self.mode.displayName) mode")
+            }
             inhibitRetryCount = 0
+            lastInhibitTime = nil
         }
 
     }
@@ -437,6 +450,10 @@ final class ChargingManager: ObservableObject {
             log.warning("Cannot enable charging: no API detected")
             return
         }
+
+        // End any pending inhibit verification cycle
+        lastInhibitTime = nil
+        inhibitRetryCount = 0
 
         helper.enableCharging { [weak self] success, error in
             if success {

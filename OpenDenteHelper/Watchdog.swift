@@ -9,14 +9,14 @@ private let log = Logger(subsystem: HelperConstants.machServiceName, category: "
 /// The watchdog is suspended during system sleep to prevent false triggers.
 /// Primary crash detection is via NSXPCConnection.invalidationHandler (instant).
 /// This watchdog is a secondary backup.
-final class Watchdog {
+final class Watchdog: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var lastHeartbeat: Date = Date()
     private var isSuspended = false
     private let queue = DispatchQueue(label: "com.opendente.helper.watchdog")
-    private let resetAction: () -> Void
+    private let resetAction: @Sendable () -> Void
 
-    init(resetAction: @escaping () -> Void) {
+    init(resetAction: @escaping @Sendable () -> Void) {
         self.resetAction = resetAction
     }
 

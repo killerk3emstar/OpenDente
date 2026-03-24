@@ -214,7 +214,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch status {
         case .notRegistered:
             NSLog("[OpenDente] Attempting to register helper daemon...")
-            HelperInstaller.register()
+            if HelperInstaller.register() {
+                charging.connectToHelper()
+            }
         case .requiresApproval:
             // Don't call register() — it always fails. User must toggle in System Settings.
             NSLog("[OpenDente] Helper needs approval in System Settings > Login Items")

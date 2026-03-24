@@ -273,23 +273,11 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                     break
                 }
                 HelperState.write(.inhibited)
-            } else {
-                // Disabling discharge — also re-enable charging.
-                // The app will send inhibitCharging() if needed (e.g. at charge limit),
-                // but leaving charging keys inhibited without active discharge creates
-                // an inconsistent state that delays correct behavior until the next poll.
-                switch chargingAPI {
-                case .legacy:
-                    try smc.writeKey("CH0B", bytes: [0x00])
-                    try smc.writeKey("CH0C", bytes: [0x00])
-                case .tahoe:
-                    try smc.writeKey("CHTE", bytes: [0x00, 0x00, 0x00, 0x00])
-                case .unknown:
-                    break
-                }
-                verifyChargingKey(expected: false)
-                HelperState.write(.normal)
             }
+            // Disabling discharge: only the discharge key is toggled (above).
+            // Charging keys are left as-is — ChargingManager's evaluateState
+            // sends enableCharging() or inhibitCharging() immediately after,
+            // avoiding a wasted enable→inhibit round-trip at the charge limit.
             log.info("Force discharge: \(enable)")
             reply(true, nil)
         } catch {

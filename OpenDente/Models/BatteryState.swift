@@ -27,7 +27,7 @@ struct AdapterInfo: Equatable {
 struct BatteryState: Equatable {
     // MARK: - Core
     let percentage: Int              // 0-100 (macOS reported)
-    let hardwarePercentage: Int?     // Raw SoC from SMC (B0RM/B0FC)
+    let hardwarePercentage: Int?     // Raw fuel gauge SoC — B0RM/B0FC ratio, BRSC fallback
     let isCharging: Bool
     let isPluggedIn: Bool
 

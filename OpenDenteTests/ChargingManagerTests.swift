@@ -364,6 +364,30 @@ final class ChargingManagerTests: XCTestCase {
             "One below lower bound should trigger charging")
     }
 
+    func testSailing_chargingFromBelow_continuesThroughSailingRange() {
+        settings.sailingModeEnabled = true
+        settings.sailingRange = 10  // lower bound = 70, limit = 80
+
+        // Start charging from well below sailing range
+        manager.evaluateState(makeBatteryState(percentage: 20))
+        XCTAssertEqual(manager.mode, .charging)
+
+        // Charge through the sailing range — must NOT switch to sailing
+        for pct in [50, 65, 70, 71, 75, 79] {
+            manager.evaluateState(makeBatteryState(percentage: pct))
+            XCTAssertEqual(manager.mode, .charging,
+                "At \(pct)% while charging up: must keep charging, not sail")
+        }
+
+        // Hit the limit → paused
+        manager.evaluateState(makeBatteryState(percentage: 80))
+        XCTAssertEqual(manager.mode, .paused)
+
+        // Drop into sailing range → now sail (coming from paused)
+        manager.evaluateState(makeBatteryState(percentage: 75))
+        XCTAssertEqual(manager.mode, .sailing)
+    }
+
     // =========================================================================
     // MARK: - Discharge Mode (Bug #1 regression)
     // =========================================================================
@@ -1127,7 +1151,8 @@ final class ChargingManagerTests: XCTestCase {
         }
         XCTAssertEqual(manager.inhibitRetryCount, 2)
 
-        // IOKit catches up (isCharging=false)
+        // IOKit catches up (isCharging=false) — needs ≥2s since last inhibit write
+        manager.lastInhibitTime = Date().addingTimeInterval(-3)
         manager.evaluateState(makeBatteryState(percentage: 90, isCharging: false))
         XCTAssertEqual(manager.inhibitRetryCount, 0, "Retry count should reset when IOKit confirms")
 
