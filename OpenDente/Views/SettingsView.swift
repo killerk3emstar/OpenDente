@@ -196,13 +196,16 @@ struct ChargingTab: View {
                     HStack {
                         Text("Max Temperature")
                         Slider(
-                            value: $settings.heatProtectionTemp,
-                            in: 30...45,
-                            step: 1
+                            value: Binding(
+                                get: { TemperatureDisplay.toDisplay(settings.heatProtectionTemp) },
+                                set: { settings.heatProtectionTemp = TemperatureDisplay.toCelsius($0) }
+                            ),
+                            in: TemperatureDisplay.sliderRange,
+                            step: TemperatureDisplay.sliderStep
                         )
-                        Text(String(format: "%.0f°C", settings.heatProtectionTemp))
+                        Text(TemperatureDisplay.format(settings.heatProtectionTemp, fractionDigits: 0))
                             .font(.system(.body, design: .monospaced))
-                            .frame(width: 45, alignment: .trailing)
+                            .frame(width: 50, alignment: .trailing)
                     }
                 }
             }
@@ -416,7 +419,7 @@ struct BatteryInfoTab: View {
                 validatedRow("Cycle Count", raw: state.cycleCount, format: { "\($0)" },
                              warn: { $0 < 0 || $0 >= 10000 })
                 validatedRow("Temperature", raw: state.temperature,
-                             format: { String(format: "%.1f\u{00B0}C", $0) },
+                             format: { TemperatureDisplay.format($0) },
                              warn: { $0 < -20 || $0 > 100 })
             }
 

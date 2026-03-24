@@ -255,7 +255,7 @@ struct PopoverView: View {
         switch item {
         case .temperature:
             guard let temp = state.temperature else { return nil }
-            return ("Temperature", String(format: "%.1f°C", temp))
+            return ("Temperature", TemperatureDisplay.format(temp))
         case .batteryHealth:
             guard let health = state.healthPercentage else { return nil }
             return ("Battery Health", String(format: "%.1f%%", health))

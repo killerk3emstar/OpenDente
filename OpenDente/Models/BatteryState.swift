@@ -86,7 +86,7 @@ struct BatteryState: Equatable {
         var parts: [String] = []
         if showPercentage { parts.append("\(pct)%") }
         if showTemperature, let temp = temperature {
-            parts.append(String(format: "%.0f°", temp))
+            parts.append(TemperatureDisplay.format(temp, fractionDigits: 0))
         }
         if showPower, let power = systemPower, power > 0 {
             parts.append(String(format: "%.0fW", power))
@@ -281,6 +281,42 @@ enum PopoverDetailItem: String, CaseIterable, Codable, Identifiable {
         .temperature, .batteryHealth, .cycleCount,
         .timeRemaining, .systemPower, .adapterPower
     ]
+}
+
+// MARK: - Temperature Display
+
+/// Locale-aware temperature formatting.
+/// Internal storage is always Celsius; display converts for locales that prefer Fahrenheit.
+enum TemperatureDisplay {
+    /// Whether the current locale prefers Fahrenheit (US measurement system)
+    static var prefersFahrenheit: Bool {
+        Locale.current.measurementSystem == .us
+    }
+
+    static var unitSuffix: String { prefersFahrenheit ? "°F" : "°C" }
+
+    /// Format a Celsius value for display in the user's preferred unit
+    static func format(_ celsius: Double, fractionDigits: Int = 1) -> String {
+        let value = toDisplay(celsius)
+        return String(format: "%.\(fractionDigits)f\(unitSuffix)", value)
+    }
+
+    /// Convert internal Celsius value to display unit value
+    static func toDisplay(_ celsius: Double) -> Double {
+        prefersFahrenheit ? celsius * 9.0 / 5.0 + 32.0 : celsius
+    }
+
+    /// Convert display unit value back to internal Celsius
+    static func toCelsius(_ displayValue: Double) -> Double {
+        prefersFahrenheit ? (displayValue - 32.0) * 5.0 / 9.0 : displayValue
+    }
+
+    // Heat protection slider bounds (internal range: 30–45°C)
+    static var sliderRange: ClosedRange<Double> {
+        toDisplay(30)...toDisplay(45)
+    }
+
+    static var sliderStep: Double { prefersFahrenheit ? 2 : 1 }
 }
 
 // MARK: - Comparable Utilities

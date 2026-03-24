@@ -60,12 +60,16 @@ final class AppSettings: ObservableObject {
         set { objectWillChange.send(); defaults.set(newValue, forKey: "heatProtectionEnabled") }
     }
 
+    /// Heat protection temperature threshold in Celsius (30-45), clamped on get/set
     var heatProtectionTemp: Double {
         get {
             let v = defaults.double(forKey: "heatProtectionTemp")
-            return v == 0 ? 35.0 : v
+            return (v == 0 ? 35.0 : v).clamped(to: 30...45)
         }
-        set { objectWillChange.send(); defaults.set(newValue, forKey: "heatProtectionTemp") }
+        set {
+            objectWillChange.send()
+            defaults.set(newValue.clamped(to: 30...45), forKey: "heatProtectionTemp")
+        }
     }
 
     // MARK: - Discharge
