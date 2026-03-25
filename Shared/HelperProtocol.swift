@@ -29,4 +29,11 @@ import Foundation
 
     /// Set the MagSafe LED color (0x03 = green, 0x04 = orange, 0x00 = system default)
     func setMagSafeLED(color: UInt8, reply: @escaping (Bool, String?) -> Void)
+
+    /// Sync sleep settings so the helper can independently inhibit charging on sleep.
+    /// Defense-in-depth: if the app's XPC inhibit call doesn't complete before macOS
+    /// suspends the process, the helper's IOKit sleep callback fires in kernel context
+    /// and can inhibit charging as a backup.
+    /// `sleepLEDColor`: LED color to set when inhibiting on sleep (0xFF = don't touch LED).
+    func syncSleepSettings(stopChargingWhenSleeping: Bool, sleepLEDColor: UInt8, reply: @escaping (Bool) -> Void)
 }

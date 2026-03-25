@@ -70,6 +70,10 @@ func sleepWakeCallback(
          0xe0000280: // kIOMessageSystemWillSleep (forced sleep)
         log.info("System will sleep — suspending watchdog")
         watchdog.suspend()
+        // Defense-in-depth: inhibit charging if app synced the setting.
+        // Runs in kernel power transition context — fires even if app's XPC
+        // call didn't complete before macOS suspended the app process.
+        delegate.inhibitChargingOnSleep()
         // Allow sleep to proceed
         let arg = Int(Int(bitPattern: messageArgument))
         IOAllowPowerChange(sleepRootPort, arg)

@@ -21,6 +21,14 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
     /// Whether any XPC client is currently connected (accessed under lock)
     private var hasActiveClient = false
 
+    /// Synced from app — if true, helper inhibits charging independently on sleep.
+    /// Accessed under lock (written by XPC, read by IOKit sleep callback).
+    private var stopChargingWhenSleeping = false
+
+    /// LED color to set when inhibiting charging on sleep (0xFF = don't touch LED).
+    /// Synced from app alongside stopChargingWhenSleeping.
+    private var sleepLEDColor: UInt8 = 0xFF
+
     init(watchdog: Watchdog) {
         self.watchdog = watchdog
         super.init()
@@ -316,6 +324,16 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         }
     }
 
+    func syncSleepSettings(stopChargingWhenSleeping: Bool, sleepLEDColor: UInt8, reply: @escaping (Bool) -> Void) {
+        lock.lock()
+        self.stopChargingWhenSleeping = stopChargingWhenSleeping
+        self.sleepLEDColor = sleepLEDColor
+        lock.unlock()
+        let hex = String(sleepLEDColor, radix: 16, uppercase: true)
+        log.info("Sleep settings synced: stopChargingWhenSleeping=\(stopChargingWhenSleeping), sleepLED=0x\(hex, privacy: .public)")
+        reply(true)
+    }
+
     func setMagSafeLED(color: UInt8, reply: @escaping (Bool, String?) -> Void) {
         lock.lock()
         defer { lock.unlock() }
@@ -333,6 +351,51 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         } catch {
             log.error("Failed to set MagSafe LED: \(error.localizedDescription)")
             reply(false, error.localizedDescription)
+        }
+    }
+
+    // MARK: - Sleep Defense-in-Depth
+
+    /// Called from IOKit sleep callback. If the app synced stopChargingWhenSleeping=true,
+    /// inhibit charging independently — backup in case app's XPC call didn't complete
+    /// before macOS suspended the app process.
+    func inhibitChargingOnSleep() {
+        lock.lock()
+        let sleepSetting = stopChargingWhenSleeping
+        let api = chargingAPI
+        let ledColor = sleepLEDColor
+        let hasLED = hasMagSafeLED
+        lock.unlock()
+
+        guard sleepSetting && api != .unknown else {
+            log.info("Sleep callback: skipped (stopChargingWhenSleeping=\(sleepSetting), api=\(String(describing: api)))")
+            return
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        do {
+            switch chargingAPI {
+            case .legacy:
+                try smc.writeKey("CH0B", bytes: [0x02])
+                try smc.writeKey("CH0C", bytes: [0x02])
+            case .tahoe:
+                try smc.writeKey("CHTE", bytes: [0x01, 0x00, 0x00, 0x00])
+            case .unknown:
+                break
+            }
+            // Update LED to reflect inhibited state (visible with lid closed).
+            // 0xFF = don't touch LED (controlMagSafeLED is off).
+            if hasLED && ledColor != 0xFF {
+                try smc.writeKey("ACLC", bytes: [ledColor])
+                let hex = String(ledColor, radix: 16, uppercase: true)
+                log.info("Sleep callback: LED set to 0x\(hex, privacy: .public)")
+            }
+            HelperState.write(.inhibited)
+            log.info("Sleep callback: inhibited charging (defense-in-depth)")
+        } catch {
+            log.error("Sleep callback: failed to inhibit charging: \(error.localizedDescription)")
         }
     }
 

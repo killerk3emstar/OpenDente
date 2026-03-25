@@ -234,6 +234,16 @@ final class HelperClient: @unchecked Sendable {
         }
     }
 
+    func syncSleepSettings(stopChargingWhenSleeping: Bool, sleepLEDColor: UInt8) {
+        withProxy { helper in
+            helper.syncSleepSettings(stopChargingWhenSleeping: stopChargingWhenSleeping, sleepLEDColor: sleepLEDColor) { success in
+                if !success {
+                    log.warning("syncSleepSettings failed")
+                }
+            }
+        }
+    }
+
     func setMagSafeLED(color: UInt8, completion: (@Sendable (Bool, String?) -> Void)? = nil) {
         withProxy { helper in
             helper.setMagSafeLED(color: color) { success, error in

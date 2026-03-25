@@ -35,10 +35,13 @@ enum HelperConstants {
     static let stateFilePath = "/Library/Application Support/OpenDente/helper-state"
 
     /// Helper version (bump when protocol changes)
-    static let helperVersion = "1.1.0"
+    static let helperVersion = "1.2.0"
 
     /// Minimum helper version that supports MagSafe LED control (ACLC)
     static let minVersionMagSafeLED = "1.1.0"
+
+    /// Minimum helper version that supports sleep settings sync
+    static let minVersionSleepSync = "1.2.0"
 
     /// Name of the launchd plist file (in app bundle Contents/Library/LaunchDaemons/)
     static let launchdPlistName = "com.opendente.helper.plist"
