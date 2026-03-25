@@ -225,12 +225,15 @@ struct ChargingTab: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                Toggle("Stop Charging when Sleeping ★", isOn: $settings.stopChargingWhenSleeping)
-                Toggle("Use Hardware Battery Percentage", isOn: $settings.useHardwareBatteryPercentage)
-
-                Text("★ Not yet implemented — coming in a future update")
+                Toggle("Stop Charging when Sleeping", isOn: $settings.stopChargingWhenSleeping)
+                Text("Inhibits charging before sleep so the battery stays at its current level.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                Toggle("Disable Sleep until Charge Limit", isOn: $settings.disableSleepUntilChargeLimit)
+                Text("Keeps Mac awake while charging or discharging toward the limit.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Toggle("Use Hardware Battery Percentage", isOn: $settings.useHardwareBatteryPercentage)
             }
         }
         .formStyle(.grouped)
