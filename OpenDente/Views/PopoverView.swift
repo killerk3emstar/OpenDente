@@ -73,12 +73,6 @@ struct PopoverView: View {
                 .padding(.vertical, 8)
         }
         .frame(width: 320)
-        .onAppear {
-            battery.setPopoverVisible(true)
-        }
-        .onDisappear {
-            battery.setPopoverVisible(false)
-        }
     }
 
     // MARK: - Header
