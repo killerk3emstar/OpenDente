@@ -40,13 +40,19 @@ final class ChargingManager: ObservableObject {
     }
     @Published internal(set) var chargingAPI: SMCChargingAPI = .unknown
     @Published var isHelperInstalled = false
+    @Published private(set) var isPreventingSleep = false
 
     private let smc = SMCService.shared
     private let battery: BatteryService
     let settings: AppSettings
     private let helper: ChargingControl
+    private let sleepAssertion: SleepAssertionControl
     private var cancellables = Set<AnyCancellable>()
     var heatProtectionTimer: Date?
+
+    /// Mode captured at sleep entry — used to know what was happening before sleep.
+    /// Internal for testability.
+    private(set) var modeBeforeSleep: ChargingMode?
 
     /// Tracked helper version — used to gate protocol features (e.g. MagSafe LED).
     /// Internal for testability.
@@ -69,14 +75,17 @@ final class ChargingManager: ObservableObject {
     private(set) var lastIsCharging: Bool = false
 
     private convenience init() {
-        self.init(settings: .shared, helper: HelperClient.shared, battery: .shared)
+        self.init(settings: .shared, helper: HelperClient.shared, battery: .shared,
+                  sleepAssertion: SleepAssertionManager())
     }
 
     /// Initializer with dependency injection for testability
-    init(settings: AppSettings, helper: ChargingControl, battery: BatteryService) {
+    init(settings: AppSettings, helper: ChargingControl, battery: BatteryService,
+         sleepAssertion: SleepAssertionControl? = nil) {
         self.settings = settings
         self.helper = helper
         self.battery = battery
+        self.sleepAssertion = sleepAssertion ?? SleepAssertionManager()
     }
 
     // MARK: - Lifecycle
@@ -102,6 +111,9 @@ final class ChargingManager: ObservableObject {
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.evaluateState(self.battery.batteryState)
+                // Resync sleep setting with helper on any settings change.
+                // Lightweight: sends a single bool over XPC, no SMC writes.
+                self.syncSleepSettingsWithHelper()
             }
             .store(in: &cancellables)
 
@@ -151,10 +163,29 @@ final class ChargingManager: ObservableObject {
                 // Reset LED cache — helper may have restarted with default LED state
                 self?.lastLEDColor = nil
                 self?.updateMagSafeLED()
+                // Sync sleep settings with helper (defense-in-depth)
+                self?.syncSleepSettingsWithHelper()
                 // Resync charging state with the (re)connected helper
                 self?.resyncChargingState()
             }
         }
+    }
+
+    /// Sync the stopChargingWhenSleeping setting to the helper (version-gated).
+    /// Also computes the LED color the helper should use when inhibiting on sleep.
+    private func syncSleepSettingsWithHelper() {
+        guard let version = helperVersion,
+              version.isVersionAtLeast(HelperConstants.minVersionSleepSync) else {
+            return
+        }
+        // 0xFF = sentinel for "don't touch LED" (when controlMagSafeLED is off)
+        let ledColor: UInt8 = settings.controlMagSafeLED
+            ? (settings.magSafeLEDOffWhenInactive ? HelperConstants.ledOff : HelperConstants.ledGreen)
+            : 0xFF
+        HelperClient.shared.syncSleepSettings(
+            stopChargingWhenSleeping: settings.stopChargingWhenSleeping,
+            sleepLEDColor: ledColor
+        )
     }
 
     // MARK: - API Detection
@@ -194,6 +225,7 @@ final class ChargingManager: ObservableObject {
 
         lastIsCharging = state.isCharging
         defer { updateMagSafeLED() }
+        defer { updateSleepAssertion(state) }
 
         // Not plugged in = on battery, nothing to control.
         // Exception: during force discharge, IOKit reports power source as "battery"
@@ -355,7 +387,132 @@ final class ChargingManager: ObservableObject {
             inhibitRetryCount = 0
             lastInhibitTime = nil
         }
+    }
 
+    // MARK: - Sleep/Wake
+
+    /// Called by AppDelegate when macOS is about to sleep.
+    /// If stopChargingWhenSleeping is on: inhibits charging so the battery doesn't
+    /// charge to 100% during sleep. Also stops discharge (pointless during sleep).
+    func handleWillSleep() {
+        modeBeforeSleep = mode
+        log.info("Will sleep: mode=\(self.mode.displayName), stopCharging=\(self.settings.stopChargingWhenSleeping), disableSleep=\(self.settings.disableSleepUntilChargeLimit)")
+
+        // Always stop discharge before sleep — no system load means meaningless drain
+        if mode == .discharging {
+            forceDischarge(false)
+            log.info("Will sleep: stopped discharge")
+        }
+
+        guard settings.stopChargingWhenSleeping else {
+            log.info("Will sleep: stopChargingWhenSleeping OFF — no inhibit")
+            return
+        }
+        // If mode is .onBattery or .idle, there's nothing to inhibit
+        guard mode != .onBattery && mode != .idle else {
+            log.info("Will sleep: mode is \(self.mode.displayName) — nothing to inhibit")
+            return
+        }
+
+        // Pre-emptively inhibit charging before sleep.
+        // Even if already inhibited (paused/sailing), re-send as defense in depth —
+        // macOS may have cleared the SMC state.
+        inhibitCharging()
+
+        // Update LED to reflect that charging is now inhibited.
+        // Without this, LED stays orange (frozen) during sleep even though
+        // charging was stopped. MagSafe LED is visible with the lid closed.
+        if settings.controlMagSafeLED {
+            let color = settings.magSafeLEDOffWhenInactive
+                ? HelperConstants.ledOff
+                : HelperConstants.ledGreen
+            sendLEDColor(color)
+        }
+
+        log.info("Will sleep: inhibited charging (stopChargingWhenSleeping)")
+    }
+
+    /// Called by AppDelegate after macOS wakes from sleep.
+    /// Clears stale state and re-evaluates — the state machine handles all transitions.
+    func handleDidWake(_ currentState: BatteryState) {
+        let previousMode = modeBeforeSleep
+        let pct = currentState.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
+        log.info("Did wake: modeBeforeSleep=\(previousMode?.displayName ?? "nil"), battery=\(pct)%, pluggedIn=\(currentState.isPluggedIn), isCharging=\(currentState.isCharging)")
+
+        modeBeforeSleep = nil
+        // Clear stale verification state from before sleep
+        lastInhibitTime = nil
+        inhibitRetryCount = 0
+
+        // If we were discharging, handleWillSleep stopped forceDischarge but left mode
+        // as .discharging. Reset to .onBattery so evaluateState doesn't get stuck in the
+        // discharge early-return path. Using .onBattery (not .idle) avoids a spurious
+        // "discharge complete" notification from the .discharging → .idle transition.
+        if mode == .discharging {
+            mode = .onBattery
+        }
+
+        let modeBeforeEval = mode
+        evaluateState(currentState)
+
+        // evaluateState skips SMC writes when mode hasn't changed (optimization).
+        // After sleep, SMC state may be stale (we inhibited during sleep, or macOS
+        // reset charging state). Re-send the correct command if mode was unchanged.
+        if mode == modeBeforeEval {
+            resyncSMCAfterWake()
+        }
+
+        log.info("Did wake: evaluated → mode=\(self.mode.displayName)")
+    }
+
+    /// Re-send the SMC command for the current mode after wake.
+    /// Called when evaluateState kept the same mode and thus skipped the SMC write.
+    private func resyncSMCAfterWake() {
+        switch mode {
+        case .charging, .topUp:
+            enableCharging()
+            log.info("Wake resync: re-enabled charging")
+        case .paused, .sailing, .heatProtection:
+            inhibitCharging()
+            log.info("Wake resync: re-inhibited charging")
+        case .discharging:
+            forceDischarge(true)
+            log.info("Wake resync: re-enabled discharge")
+        case .onBattery, .idle, .calibrating:
+            break
+        }
+    }
+
+    // MARK: - Sleep Assertion
+
+    /// Update IOPMAssertion to prevent/allow system idle sleep.
+    /// Called at the end of every evaluateState.
+    private func updateSleepAssertion(_ state: BatteryState) {
+        guard settings.disableSleepUntilChargeLimit else {
+            if isPreventingSleep {
+                log.info("Sleep assertion: released (setting disabled)")
+                sleepAssertion.allowSleep()
+                isPreventingSleep = false
+            }
+            return
+        }
+
+        let pct = state.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
+        // Keep awake while actively working toward the charge limit
+        let shouldPrevent = state.isPluggedIn
+            && pct != settings.chargeLimit
+            && (mode == .charging || mode == .discharging)
+
+        if shouldPrevent && !isPreventingSleep {
+            log.info("Sleep assertion: preventing sleep (mode=\(self.mode.displayName), \(pct)% → \(self.settings.chargeLimit)%)")
+            isPreventingSleep = sleepAssertion.preventSleep(
+                reason: "OpenDente: Charging to \(settings.chargeLimit)%"
+            )
+        } else if !shouldPrevent && isPreventingSleep {
+            log.info("Sleep assertion: released (mode=\(self.mode.displayName), pct=\(pct)%, limit=\(self.settings.chargeLimit)%, pluggedIn=\(state.isPluggedIn))")
+            sleepAssertion.allowSleep()
+            isPreventingSleep = false
+        }
     }
 
     // MARK: - Actions
@@ -518,7 +675,6 @@ final class ChargingManager: ObservableObject {
         }
         guard let version = helperVersion,
               version.isVersionAtLeast(HelperConstants.minVersionMagSafeLED) else {
-            log.debug("LED update skipped: helperVersion=\(self.helperVersion ?? "nil")")
             return
         }
 
@@ -574,6 +730,8 @@ final class ChargingManager: ObservableObject {
             helper.setMagSafeLED(color: HelperConstants.ledAuto, completion: nil)
         }
         lastLEDColor = nil
+        sleepAssertion.allowSleep()
+        isPreventingSleep = false
         mode = .idle
     }
 
@@ -581,6 +739,8 @@ final class ChargingManager: ObservableObject {
     func resetToDefaultsSync() {
         log.info("App terminating — resetting SMC to defaults")
         helper.resetToDefaultsSync(timeout: 2.0)
+        sleepAssertion.allowSleep()
+        isPreventingSleep = false
         mode = .idle
     }
 }

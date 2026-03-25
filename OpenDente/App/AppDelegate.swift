@@ -252,15 +252,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func willSleep(_ notification: Notification) {
+        charging.handleWillSleep()
         HelperClient.shared.suspendWatchdog()
     }
 
     @objc private func didWake(_ notification: Notification) {
         HelperClient.shared.sendHeartbeat()
         // Refresh battery state immediately — it may have changed during sleep
-        // (e.g. charger unplugged, battery drained). This triggers evaluateState
-        // via the Combine publisher, avoiding a stale-state gap until the next poll.
+        // (e.g. charger unplugged, battery drained).
         battery.update()
+        // Call handleDidWake directly for immediate response — the Combine publisher
+        // from battery.update() delivers on the next RunLoop iteration via .receive(on:),
+        // but we need to re-evaluate NOW (e.g. resume charging if below limit).
+        // The subsequent Combine-triggered evaluateState is redundant but harmless (idempotent).
+        charging.handleDidWake(battery.batteryState)
     }
 
 }

@@ -100,6 +100,37 @@ func makeBatteryState(
     )
 }
 
+// MARK: - Mock Sleep Assertion
+
+/// Records sleep assertion calls for verification without touching IOPMAssertion.
+@MainActor
+final class MockSleepAssertionControl: SleepAssertionControl {
+    private(set) var preventSleepCallCount = 0
+    private(set) var allowSleepCallCount = 0
+    private(set) var isPreventingSleep = false
+    private(set) var lastReason: String?
+
+    func preventSleep(reason: String) -> Bool {
+        preventSleepCallCount += 1
+        lastReason = reason
+        isPreventingSleep = true
+        return true
+    }
+
+    func allowSleep() {
+        guard isPreventingSleep else { return }
+        allowSleepCallCount += 1
+        isPreventingSleep = false
+    }
+
+    func reset() {
+        preventSleepCallCount = 0
+        allowSleepCallCount = 0
+        isPreventingSleep = false
+        lastReason = nil
+    }
+}
+
 // MARK: - Charging Manager Tests
 
 @MainActor
@@ -109,6 +140,7 @@ final class ChargingManagerTests: XCTestCase {
     private var manager: ChargingManager!
     private var mock: MockChargingControl!
     private var settings: AppSettings!
+    private var sleepMock: MockSleepAssertionControl!
 
     override func setUp() {
         super.setUp()
@@ -116,20 +148,25 @@ final class ChargingManagerTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
         settings = AppSettings(defaults: defaults)
         mock = MockChargingControl()
-        manager = ChargingManager(settings: settings, helper: mock, battery: .shared)
+        sleepMock = MockSleepAssertionControl()
+        manager = ChargingManager(settings: settings, helper: mock, battery: .shared,
+                                  sleepAssertion: sleepMock)
         manager.chargingAPI = .legacy
         manager.isHelperInstalled = true
 
-        // Explicit preconditions — tests that need sailing/heat enable it themselves
+        // Explicit preconditions — tests that need sailing/heat/sleep enable it themselves
         settings.sailingModeEnabled = false
         settings.heatProtectionEnabled = false
         settings.controlMagSafeLED = false
+        settings.stopChargingWhenSleeping = false
+        settings.disableSleepUntilChargeLimit = false
     }
 
     override func tearDown() {
         UserDefaults.standard.removePersistentDomain(forName: suiteName)
         manager = nil
         mock = nil
+        sleepMock = nil
         settings = nil
         super.tearDown()
     }
@@ -1381,6 +1418,398 @@ final class ChargingManagerTests: XCTestCase {
         mock.clearCalls()
         manager.evaluateState(makeBatteryState(percentage: 76, hardwarePercentage: 80))
         XCTAssertNotEqual(manager.mode, .discharging, "Auto-discharge should stop when hw% reaches limit")
+    }
+
+    // =========================================================================
+    // MARK: - Stop Charging when Sleeping
+    // =========================================================================
+
+    func testWillSleep_stopChargingEnabled_pluggedIn_inhibitsCharging() {
+        settings.stopChargingWhenSleeping = true
+        // Put manager in charging mode first
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertEqual(manager.mode, .charging)
+        mock.clearCalls()
+
+        manager.handleWillSleep()
+
+        XCTAssertEqual(mock.calls, [.inhibitCharging])
+        XCTAssertEqual(manager.modeBeforeSleep, .charging)
+    }
+
+    func testWillSleep_stopChargingEnabled_onBattery_noAction() {
+        settings.stopChargingWhenSleeping = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isPluggedIn: false))
+        XCTAssertEqual(manager.mode, .onBattery)
+        mock.clearCalls()
+
+        manager.handleWillSleep()
+
+        XCTAssertTrue(mock.calls.isEmpty, "No SMC calls when on battery")
+        XCTAssertEqual(manager.modeBeforeSleep, .onBattery)
+    }
+
+    func testWillSleep_stopChargingDisabled_noInhibit() {
+        settings.stopChargingWhenSleeping = false
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        mock.clearCalls()
+
+        manager.handleWillSleep()
+
+        XCTAssertTrue(mock.calls.isEmpty, "No inhibit when stopChargingWhenSleeping is off")
+    }
+
+    func testWillSleep_whileDischarging_stopsDischarge() {
+        settings.stopChargingWhenSleeping = false // test discharge stop independently
+        settings.chargeLimit = 70
+        manager.evaluateState(makeBatteryState(percentage: 85, isCharging: false))
+        manager.startDischarge()
+        XCTAssertEqual(manager.mode, .discharging)
+        mock.clearCalls()
+
+        manager.handleWillSleep()
+
+        XCTAssertTrue(mock.calls.contains(.forceDischarge(enable: false)),
+            "Discharge must be stopped before sleep")
+    }
+
+    func testWillSleep_whileCharging_storesModeBeforeSleep() {
+        settings.stopChargingWhenSleeping = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertEqual(manager.mode, .charging)
+
+        manager.handleWillSleep()
+
+        XCTAssertEqual(manager.modeBeforeSleep, .charging)
+    }
+
+    func testWillSleep_whilePaused_stillInhibits() {
+        settings.stopChargingWhenSleeping = true
+        // Already paused (charging inhibited)
+        manager.evaluateState(makeBatteryState(percentage: 80, isCharging: false))
+        XCTAssertEqual(manager.mode, .paused)
+        mock.clearCalls()
+
+        manager.handleWillSleep()
+
+        // Defense in depth: re-send inhibit even if already paused
+        XCTAssertEqual(mock.calls, [.inhibitCharging])
+    }
+
+    func testWillSleep_inTopUpMode_inhibitsCharging() {
+        settings.stopChargingWhenSleeping = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        manager.startTopUp()
+        XCTAssertEqual(manager.mode, .topUp)
+        mock.clearCalls()
+
+        manager.handleWillSleep()
+
+        XCTAssertEqual(mock.calls, [.inhibitCharging])
+        XCTAssertEqual(manager.modeBeforeSleep, .topUp)
+    }
+
+    func testWillSleep_whileDischarging_withStopCharging_stopsDischargeAndInhibits() {
+        settings.stopChargingWhenSleeping = true
+        settings.chargeLimit = 70
+        manager.evaluateState(makeBatteryState(percentage: 85, isCharging: false))
+        manager.startDischarge()
+        XCTAssertEqual(manager.mode, .discharging)
+        mock.clearCalls()
+
+        manager.handleWillSleep()
+
+        XCTAssertTrue(mock.calls.contains(.forceDischarge(enable: false)))
+        XCTAssertTrue(mock.calls.contains(.inhibitCharging))
+    }
+
+    func testDidWake_belowLimit_resumesCharging() {
+        settings.stopChargingWhenSleeping = true
+        // Simulate: was charging, went to sleep, now waking
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        manager.handleWillSleep()
+        mock.clearCalls()
+
+        manager.handleDidWake(makeBatteryState(percentage: 60, isCharging: false))
+
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertEqual(mock.calls, [.enableCharging])
+        XCTAssertNil(manager.modeBeforeSleep)
+    }
+
+    func testDidWake_atLimit_staysPaused() {
+        settings.stopChargingWhenSleeping = true
+        manager.evaluateState(makeBatteryState(percentage: 80, isCharging: false))
+        manager.handleWillSleep()
+        mock.clearCalls()
+
+        manager.handleDidWake(makeBatteryState(percentage: 80, isCharging: false))
+
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertNil(manager.modeBeforeSleep)
+    }
+
+    func testDidWake_chargerUnplugged_goesToOnBattery() {
+        settings.stopChargingWhenSleeping = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        manager.handleWillSleep()
+        mock.clearCalls()
+
+        // Wake up with charger unplugged
+        manager.handleDidWake(makeBatteryState(percentage: 58, isPluggedIn: false))
+
+        XCTAssertEqual(manager.mode, .onBattery)
+    }
+
+    func testDidWake_clearsStaleVerificationState() {
+        settings.stopChargingWhenSleeping = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        // Simulate pending verification
+        manager.lastInhibitTime = Date()
+        manager.inhibitRetryCount = 2
+        manager.handleWillSleep()
+
+        manager.handleDidWake(makeBatteryState(percentage: 60, isCharging: false))
+
+        XCTAssertNil(manager.lastInhibitTime)
+        XCTAssertEqual(manager.inhibitRetryCount, 0)
+    }
+
+    func testDidWake_clearsModeBeforeSleep() {
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        manager.handleWillSleep()
+        XCTAssertNotNil(manager.modeBeforeSleep)
+
+        manager.handleDidWake(makeBatteryState(percentage: 60, isCharging: false))
+        XCTAssertNil(manager.modeBeforeSleep)
+    }
+
+    func testSleepWakeSleepWake_noStateLeaks() {
+        settings.stopChargingWhenSleeping = true
+
+        // Cycle 1
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        manager.handleWillSleep()
+        manager.handleDidWake(makeBatteryState(percentage: 60, isCharging: false))
+        XCTAssertNil(manager.modeBeforeSleep)
+        XCTAssertNil(manager.lastInhibitTime)
+
+        // Cycle 2
+        manager.evaluateState(makeBatteryState(percentage: 70, isCharging: true))
+        manager.handleWillSleep()
+        XCTAssertEqual(manager.modeBeforeSleep, .charging)
+        manager.handleDidWake(makeBatteryState(percentage: 70, isCharging: false))
+        XCTAssertNil(manager.modeBeforeSleep)
+        XCTAssertEqual(manager.inhibitRetryCount, 0)
+    }
+
+    // =========================================================================
+    // MARK: - Disable Sleep until Charge Limit
+    // =========================================================================
+
+    func testSleepAssertion_chargingBelowLimit_preventSleep() {
+        settings.disableSleepUntilChargeLimit = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertTrue(sleepMock.isPreventingSleep)
+        XCTAssertEqual(sleepMock.preventSleepCallCount, 1)
+    }
+
+    func testSleepAssertion_dischargingAboveLimit_preventSleep() {
+        settings.disableSleepUntilChargeLimit = true
+        settings.chargeLimit = 70
+        manager.evaluateState(makeBatteryState(percentage: 85, isCharging: false))
+        manager.startDischarge()
+        XCTAssertEqual(manager.mode, .discharging)
+
+        // Trigger evaluateState to update assertion
+        manager.evaluateState(makeBatteryState(percentage: 83, isCharging: false, adapterPower: 5.0))
+        XCTAssertTrue(sleepMock.isPreventingSleep)
+    }
+
+    func testSleepAssertion_dischargeReachesLimit_releases() {
+        settings.disableSleepUntilChargeLimit = true
+        settings.chargeLimit = 70
+        manager.evaluateState(makeBatteryState(percentage: 85, isCharging: false))
+        manager.startDischarge()
+        XCTAssertEqual(manager.mode, .discharging)
+
+        // Discharge reaches limit
+        manager.evaluateState(makeBatteryState(percentage: 70, isCharging: false))
+        XCTAssertNotEqual(manager.mode, .discharging)
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+    }
+
+    func testSleepAssertion_reachesLimit_releases() {
+        settings.disableSleepUntilChargeLimit = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertTrue(sleepMock.isPreventingSleep)
+
+        // Reaches limit
+        manager.evaluateState(makeBatteryState(percentage: 80, isCharging: false))
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+    }
+
+    func testSleepAssertion_unplugged_releases() {
+        settings.disableSleepUntilChargeLimit = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertTrue(sleepMock.isPreventingSleep)
+
+        // Charger unplugged
+        manager.evaluateState(makeBatteryState(percentage: 60, isPluggedIn: false))
+        XCTAssertEqual(manager.mode, .onBattery)
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+    }
+
+    func testSleepAssertion_settingDisabled_releases() {
+        settings.disableSleepUntilChargeLimit = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertTrue(sleepMock.isPreventingSleep)
+
+        // User disables the setting
+        settings.disableSleepUntilChargeLimit = false
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+    }
+
+    func testSleepAssertion_alreadyAtLimit_noAssertion() {
+        settings.disableSleepUntilChargeLimit = true
+        manager.evaluateState(makeBatteryState(percentage: 80, isCharging: false))
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+    }
+
+    func testSleepAssertion_heatProtection_releases() {
+        settings.disableSleepUntilChargeLimit = true
+        settings.heatProtectionEnabled = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertTrue(sleepMock.isPreventingSleep)
+
+        // Temperature spikes — heat protection kicks in, no point keeping awake
+        manager.evaluateState(makeBatteryState(percentage: 62, isCharging: true, temperature: 40.0))
+        XCTAssertEqual(manager.mode, .heatProtection)
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+    }
+
+    func testSleepAssertion_onBattery_noAssertion() {
+        settings.disableSleepUntilChargeLimit = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isPluggedIn: false))
+        XCTAssertEqual(manager.mode, .onBattery)
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+    }
+
+    func testSleepAssertion_topUpMode_noAssertion() {
+        settings.disableSleepUntilChargeLimit = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        manager.startTopUp()
+        XCTAssertEqual(manager.mode, .topUp)
+        // Re-evaluate with topUp mode
+        manager.evaluateState(makeBatteryState(percentage: 65, isCharging: true))
+        // topUp returns early in evaluateState, mode stays .topUp which is not .charging/.discharging
+        XCTAssertFalse(sleepMock.isPreventingSleep,
+            "Top Up should not prevent sleep (it's a user override, not 'until charge limit')")
+    }
+
+    func testSleepAssertion_sailingMode_noAssertion() {
+        settings.disableSleepUntilChargeLimit = true
+        settings.sailingModeEnabled = true
+        settings.sailingRange = 10
+        // In sailing range but not actively charging
+        manager.evaluateState(makeBatteryState(percentage: 80, isCharging: false))
+        manager.evaluateState(makeBatteryState(percentage: 76, isCharging: false))
+        XCTAssertEqual(manager.mode, .sailing)
+        XCTAssertFalse(sleepMock.isPreventingSleep,
+            "Sailing mode is not actively charging — should not prevent sleep")
+    }
+
+    // =========================================================================
+    // MARK: - Sleep Scenarios (both features)
+    // =========================================================================
+
+    func testScenario_bothFeaturesOn_chargeToLimitThenSleep() {
+        settings.stopChargingWhenSleeping = true
+        settings.disableSleepUntilChargeLimit = true
+
+        // Charging below limit — assertion active
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertTrue(sleepMock.isPreventingSleep)
+
+        // Reaches limit — assertion released
+        manager.evaluateState(makeBatteryState(percentage: 80, isCharging: false))
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+
+        // Mac goes to sleep — inhibit sent
+        mock.clearCalls()
+        manager.handleWillSleep()
+        XCTAssertEqual(mock.calls, [.inhibitCharging])
+    }
+
+    func testScenario_closeLidUnplugged_noAssertionNoInhibit() {
+        settings.stopChargingWhenSleeping = true
+        settings.disableSleepUntilChargeLimit = true
+
+        manager.evaluateState(makeBatteryState(percentage: 60, isPluggedIn: false))
+        XCTAssertEqual(manager.mode, .onBattery)
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+
+        mock.clearCalls()
+        manager.handleWillSleep()
+        // On battery: no inhibit, no assertion
+        XCTAssertTrue(mock.calls.isEmpty)
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+    }
+
+    func testScenario_unplugDuringKeepAwake_releasesAndGoesOnBattery() {
+        settings.disableSleepUntilChargeLimit = true
+
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertTrue(sleepMock.isPreventingSleep)
+
+        // Charger unplugged
+        manager.evaluateState(makeBatteryState(percentage: 60, isPluggedIn: false))
+        XCTAssertEqual(manager.mode, .onBattery)
+        XCTAssertFalse(sleepMock.isPreventingSleep)
+        XCTAssertEqual(sleepMock.allowSleepCallCount, 1)
+    }
+
+    func testScenario_dischargeInterruptedBySleep_noSpuriousNotification() {
+        settings.disableSleepUntilChargeLimit = true
+
+        // Start discharge at 85%, limit 80%
+        manager.evaluateState(makeBatteryState(percentage: 85, isCharging: false))
+        manager.startDischarge()
+        XCTAssertEqual(manager.mode, .discharging)
+        // Trigger sleep assertion update (only runs in evaluateState's defer)
+        manager.evaluateState(makeBatteryState(percentage: 85, isCharging: false))
+        XCTAssertTrue(sleepMock.isPreventingSleep)
+
+        // Mac goes to sleep — discharge stopped
+        manager.handleWillSleep()
+        XCTAssertEqual(mock.calls.last, .forceDischarge(enable: false))
+
+        mock.clearCalls()
+        sleepMock.reset()
+
+        // Mac wakes up — mode should NOT go through .idle (would trigger
+        // spurious "discharge complete" notification).
+        // handleDidWake resets .discharging → .onBattery to avoid this.
+        manager.handleDidWake(makeBatteryState(percentage: 85, isCharging: false))
+
+        // Should be paused (85% > 80%), NOT discharging (was interrupted by sleep)
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertNil(manager.modeBeforeSleep)
+    }
+
+    func testSleepAssertion_releasedOnResetToDefaults() {
+        settings.disableSleepUntilChargeLimit = true
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertTrue(sleepMock.isPreventingSleep)
+
+        manager.resetToDefaults()
+        XCTAssertFalse(sleepMock.isPreventingSleep)
     }
 }
 
