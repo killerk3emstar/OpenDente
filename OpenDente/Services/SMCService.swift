@@ -307,6 +307,21 @@ final class SMCService: @unchecked Sendable {
         readKeyOptional(key) != nil
     }
 
+    /// Get key metadata (data type and size) for diagnostics.
+    /// Returns nil if the key doesn't exist.
+    func keyInfo(_ key: String) -> (type: String, size: UInt32)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isOpen else { return nil }
+
+        var input = SMCParamStruct()
+        input.key = fourCharCode(from: key)
+        input.data8 = kSMCGetKeyInfo
+        guard let output = try? callSMC(input: input),
+              output.keyInfo.dataSize > 0 else { return nil }
+        return (fourCharString(from: output.keyInfo.dataType), output.keyInfo.dataSize)
+    }
+
     // MARK: - Private
 
     private func callSMC(input: SMCParamStruct) throws -> SMCParamStruct {

@@ -196,18 +196,59 @@ final class ChargingManager: ObservableObject {
         if smc.keyExists("CHTE") {
             chargingAPI = .tahoe
             log.info("Detected Tahoe charging API (CHTE/CHIE)")
-            return
-        }
-
-        // Try legacy keys
-        if smc.keyExists("CH0B") {
+        } else if smc.keyExists("CH0B") {
             chargingAPI = .legacy
             log.info("Detected legacy charging API (CH0B/CH0C)")
-            return
+        } else {
+            chargingAPI = .unknown
+            log.info("No charging control keys detected")
         }
 
-        chargingAPI = .unknown
-        log.info("No charging control keys detected")
+        logDiagnosticDump()
+    }
+
+    /// One-time diagnostic dump at startup for Tahoe investigation.
+    private func logDiagnosticDump() {
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let osStr = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+
+        var model = "unknown"
+        var size: Int = 0
+        if sysctlbyname("hw.model", nil, &size, nil, 0) == 0 {
+            var buf = [CChar](repeating: 0, count: size)
+            if sysctlbyname("hw.model", &buf, &size, nil, 0) == 0 {
+                model = String(cString: buf)
+            }
+        }
+
+        let diagnosticKeys = ["CHTE", "CHIE", "CH0B", "CH0C", "CH0I", "CH0J", "ACLC"]
+        var keyLines: [String] = []
+        for key in diagnosticKeys {
+            if let info = smc.keyInfo(key) {
+                keyLines.append("  \(key): exists=true  type=\(info.type)  size=\(info.size)")
+            } else {
+                keyLines.append("  \(key): exists=false")
+            }
+        }
+
+        let state = battery.batteryState
+        let pct = state.percentage
+        let apiName: String
+        switch chargingAPI {
+        case .tahoe: apiName = "tahoe"
+        case .legacy: apiName = "legacy"
+        case .unknown: apiName = "unknown"
+        }
+
+        log.info("""
+        === OpenDente Diagnostic Dump ===
+        macOS: \(osStr, privacy: .public)
+        Model: \(model, privacy: .public)
+        Charging API: \(apiName, privacy: .public)
+        \(keyLines.joined(separator: "\n"), privacy: .public)
+        Battery: \(pct)%, charging=\(state.isCharging), pluggedIn=\(state.isPluggedIn)
+        =================================
+        """)
     }
 
     // MARK: - State Machine
@@ -371,8 +412,10 @@ final class ChargingManager: ObservableObject {
             && state.isCharging {
             if inhibitElapsed >= 15 && inhibitRetryCount < 3 {
                 inhibitRetryCount += 1
-                log.warning("IOKit still reports charging in \(self.mode.displayName) mode — re-sending inhibit (\(self.inhibitRetryCount)/3)")
+                log.warning("IOKit still reports charging in \(self.mode.displayName) mode — re-sending inhibit (\(self.inhibitRetryCount)/3, \(String(format: "%.0f", inhibitElapsed), privacy: .public)s since first inhibit) | IOKit: isCharging=\(state.isCharging), pct=\(pct)%, adapterPower=\(String(format: "%.1f", state.adapterPower ?? -1), privacy: .public)W")
                 inhibitCharging()
+            } else if inhibitRetryCount >= 3 {
+                log.error("Inhibit retry exhausted (3/3, \(String(format: "%.0f", inhibitElapsed), privacy: .public)s) — SMC writes may be overridden by system | IOKit: isCharging=\(state.isCharging), pct=\(pct)%")
             }
         } else if (mode == .paused || mode == .sailing || mode == .heatProtection)
                     && !state.isCharging && lastInhibitTime != nil
@@ -380,7 +423,7 @@ final class ChargingManager: ObservableObject {
             // Require ≥2s since inhibit write to avoid confirming in the same evaluateState
             // call that sent the inhibit (e.g. cable plug with stale SMC inhibit).
             if inhibitRetryCount > 0 {
-                log.info("IOKit confirmed: charging stopped in \(self.mode.displayName) mode (after \(self.inhibitRetryCount) retries)")
+                log.info("IOKit confirmed: charging stopped in \(self.mode.displayName) mode (after \(self.inhibitRetryCount) retries, \(String(format: "%.0f", inhibitElapsed), privacy: .public)s)")
             } else {
                 log.info("IOKit confirmed: charging stopped in \(self.mode.displayName) mode")
             }

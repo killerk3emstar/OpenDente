@@ -19,6 +19,14 @@ final class BatteryService: ObservableObject {
     private var runLoopSource: CFRunLoopSource?
     private let smc = SMCService.shared
     let settings: AppSettings
+    /// Whether the first IORegistry diagnostic dump has been logged (avoid spamming every 2s)
+    private var didLogIORegistryDiag = false
+    /// Last logged NotChargingReason — only log when it changes
+    private var lastLoggedNotChargingReason: UInt64?
+    /// Whether full AdapterDetails have been logged (re-log when adapter first appears)
+    private var didLogAdapterDetails = false
+    /// Last logged ChargerInhibitReason — only log when it changes
+    private var lastLoggedInhibitReason: UInt64?
 
     init(settings: AppSettings = .shared) {
         self.settings = settings
@@ -392,12 +400,44 @@ final class BatteryService: ObservableObject {
 
         // NotChargingReason from ChargerData (CF bridges as Int or UInt64)
         var notChargingReason: UInt64?
-        if let chargerData = chargerDict,
-           let raw = chargerData["NotChargingReason"] {
-            if let val = raw as? UInt64 {
-                notChargingReason = val
-            } else if let val = raw as? Int {
-                notChargingReason = UInt64(bitPattern: Int64(val))
+        if let chargerData = chargerDict {
+            if let raw = chargerData["NotChargingReason"] {
+                if let val = raw as? UInt64 {
+                    notChargingReason = val
+                } else if let val = raw as? Int {
+                    notChargingReason = UInt64(bitPattern: Int64(val))
+                }
+                if notChargingReason != lastLoggedNotChargingReason {
+                    let hex = String(notChargingReason ?? 0, radix: 16, uppercase: true)
+                    log.info("NotChargingReason: \(notChargingReason ?? 0) (0x\(hex, privacy: .public))")
+                    lastLoggedNotChargingReason = notChargingReason
+                }
+            }
+
+            // ChargerInhibitReason — may reveal WHO is inhibiting (us vs system)
+            if let raw = chargerData["ChargerInhibitReason"] {
+                var val: UInt64 = 0
+                if let v = raw as? UInt64 { val = v }
+                else if let v = raw as? Int { val = UInt64(bitPattern: Int64(v)) }
+                if val != lastLoggedInhibitReason {
+                    let hex = String(val, radix: 16, uppercase: true)
+                    log.info("ChargerInhibitReason: \(val) (0x\(hex, privacy: .public))")
+                    lastLoggedInhibitReason = val
+                }
+            }
+
+            // Log IORegistry dict keys once, and re-log if adapter appears
+            // (first read may be on battery with sparse data)
+            let hasFullAdapter = (adapterDict?.count ?? 0) > 1
+            if !didLogIORegistryDiag || (!didLogAdapterDetails && hasFullAdapter) {
+                let chargerKeys = chargerData.keys.sorted().joined(separator: ", ")
+                log.info("ChargerData keys: [\(chargerKeys, privacy: .public)]")
+                if let adapter = adapterDict {
+                    let adapterKeys = adapter.keys.sorted().joined(separator: ", ")
+                    log.info("AdapterDetails keys: [\(adapterKeys, privacy: .public)]")
+                    if hasFullAdapter { didLogAdapterDetails = true }
+                }
+                didLogIORegistryDiag = true
             }
         }
 

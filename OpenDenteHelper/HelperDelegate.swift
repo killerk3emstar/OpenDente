@@ -61,10 +61,25 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
 
         // Check for MagSafe LED control (not all Macs have MagSafe)
         hasMagSafeLED = smc.keyExists("ACLC")
-        log.info("MagSafe LED (ACLC): \(self.hasMagSafeLED ? "available" : "not found")")
+        log.info("MagSafe LED (ACLC): \(self.hasMagSafeLED ? "available" : "not found", privacy: .public)")
+
+        // Diagnostic: log all charging-related key availability
+        let diagnosticKeys = ["CHTE", "CHIE", "CH0B", "CH0C", "CH0I", "CH0J", "ACLC"]
+        for key in diagnosticKeys {
+            if let info = smc.keyInfo(key) {
+                log.info("SMC key \(key, privacy: .public): type=\(info.type, privacy: .public) size=\(info.size)")
+            } else {
+                log.info("SMC key \(key, privacy: .public): not found")
+            }
+        }
     }
 
     // MARK: - Verification
+
+    /// Format bytes array as hex string for logging (e.g. "01 00 00 00")
+    private func hexString(_ bytes: [UInt8]) -> String {
+        bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
 
     /// Read back the charging key after a write to confirm it took effect.
     /// `expected` = true means we expect charging to be inhibited.
@@ -72,28 +87,28 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         switch chargingAPI {
         case .legacy:
             if let val = smc.readKeyOptional("CH0B") {
+                let allHex = hexString(val.bytes)
                 let byte = val.uint8Value ?? 0
-                let hex = String(byte, radix: 16, uppercase: true)
                 let ok = inhibited ? (byte == 0x02) : (byte == 0x00)
                 if ok {
-                    log.info("CH0B readback OK: 0x\(hex, privacy: .public)")
+                    log.info("CH0B readback OK: [\(allHex, privacy: .public)]")
                 } else {
-                    let expected = inhibited ? "0x02" : "0x00"
-                    log.error("CH0B readback MISMATCH: got 0x\(hex, privacy: .public), expected \(expected, privacy: .public)")
+                    let expected = inhibited ? "02" : "00"
+                    log.error("CH0B readback MISMATCH: [\(allHex, privacy: .public)], expected [\(expected, privacy: .public)]")
                 }
             } else {
                 log.warning("CH0B readback failed: key not readable")
             }
         case .tahoe:
             if let val = smc.readKeyOptional("CHTE") {
+                let allHex = hexString(val.bytes)
                 let byte0 = val.uint8Value ?? 0xFF
-                let hex = String(byte0, radix: 16, uppercase: true)
                 let ok = inhibited ? (byte0 == 0x01) : (byte0 == 0x00)
                 if ok {
-                    log.info("CHTE readback OK: first byte 0x\(hex, privacy: .public)")
+                    log.info("CHTE readback OK: [\(allHex, privacy: .public)]")
                 } else {
-                    let expected = inhibited ? "0x01" : "0x00"
-                    log.error("CHTE readback MISMATCH: first byte 0x\(hex, privacy: .public), expected \(expected, privacy: .public)")
+                    let expected = inhibited ? "01 00 00 00" : "00 00 00 00"
+                    log.error("CHTE readback MISMATCH: [\(allHex, privacy: .public)], expected [\(expected, privacy: .public)]")
                 }
             } else {
                 log.warning("CHTE readback failed: key not readable")
@@ -204,9 +219,11 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         do {
             switch chargingAPI {
             case .legacy:
+                log.info("Writing CH0B: [00], CH0C: [00]")
                 try smc.writeKey("CH0B", bytes: [0x00])
                 try smc.writeKey("CH0C", bytes: [0x00])
             case .tahoe:
+                log.info("Writing CHTE: [00 00 00 00]")
                 try smc.writeKey("CHTE", bytes: [0x00, 0x00, 0x00, 0x00])
             case .unknown:
                 break
@@ -233,9 +250,11 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         do {
             switch chargingAPI {
             case .legacy:
+                log.info("Writing CH0B: [02], CH0C: [02]")
                 try smc.writeKey("CH0B", bytes: [0x02])
                 try smc.writeKey("CH0C", bytes: [0x02])
             case .tahoe:
+                log.info("Writing CHTE: [01 00 00 00]")
                 try smc.writeKey("CHTE", bytes: [0x01, 0x00, 0x00, 0x00])
             case .unknown:
                 break
@@ -263,9 +282,13 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         do {
             switch chargingAPI {
             case .legacy:
-                try smc.writeKey("CH0I", bytes: [enable ? 0x01 : 0x00])
+                let byte: UInt8 = enable ? 0x01 : 0x00
+                log.info("Writing CH0I: [\(self.hexString([byte]), privacy: .public)]")
+                try smc.writeKey("CH0I", bytes: [byte])
             case .tahoe:
-                try smc.writeKey("CHIE", bytes: [enable ? 0x08 : 0x00])
+                let byte: UInt8 = enable ? 0x08 : 0x00
+                log.info("Writing CHIE: [\(self.hexString([byte]), privacy: .public)]")
+                try smc.writeKey("CHIE", bytes: [byte])
             case .unknown:
                 break
             }
@@ -273,9 +296,11 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 // Enabling discharge — also inhibit charging
                 switch chargingAPI {
                 case .legacy:
+                    log.info("Writing CH0B: [02], CH0C: [02] (discharge + inhibit)")
                     try smc.writeKey("CH0B", bytes: [0x02])
                     try smc.writeKey("CH0C", bytes: [0x02])
                 case .tahoe:
+                    log.info("Writing CHTE: [01 00 00 00] (discharge + inhibit)")
                     try smc.writeKey("CHTE", bytes: [0x01, 0x00, 0x00, 0x00])
                 case .unknown:
                     break
