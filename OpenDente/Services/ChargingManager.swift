@@ -70,6 +70,9 @@ final class ChargingManager: ObservableObject {
     /// Reset when IOKit confirms not charging or mode changes.
     var inhibitRetryCount: Int = 0
 
+    /// Whether the enable-mismatch diagnostic has been logged for the current charging cycle.
+    private var didLogEnableMismatch = false
+
     /// Last known IOKit isCharging state — used by LED to reflect hardware truth
     /// regardless of which evaluateState code path ran.
     private(set) var lastIsCharging: Bool = false
@@ -429,6 +432,22 @@ final class ChargingManager: ObservableObject {
             }
             inhibitRetryCount = 0
             lastInhibitTime = nil
+        }
+
+        // Diagnostic: if we enabled charging but IOKit says not charging,
+        // read back CHTE/CH0B to check if the system overwrote our write.
+        // Log once per enable cycle to avoid spamming every 2s.
+        if mode == .charging && !state.isCharging && state.isPluggedIn && !didLogEnableMismatch {
+            if let val = smc.readKeyOptional("CHTE") {
+                let hex = val.bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+                log.warning("Enable mismatch: mode=charging but isCharging=false — CHTE readback: [\(hex, privacy: .public)] (system may be overriding via separate gate)")
+            } else if let val = smc.readKeyOptional("CH0B") {
+                let hex = val.bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+                log.warning("Enable mismatch: mode=charging but isCharging=false — CH0B readback: [\(hex, privacy: .public)]")
+            }
+            didLogEnableMismatch = true
+        } else if mode != .charging || state.isCharging {
+            didLogEnableMismatch = false
         }
     }
 
