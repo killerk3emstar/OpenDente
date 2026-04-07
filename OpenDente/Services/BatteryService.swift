@@ -39,9 +39,9 @@ final class BatteryService: ObservableObject {
         do {
             try smc.open()
             smcAvailable = true
-            log.info("SMC connected successfully")
+            log.notice("SMC connected successfully")
         } catch {
-            log.error("SMC not available: \(error.localizedDescription)")
+            log.error("SMC not available: \(error.localizedDescription, privacy: .public)")
             smcAvailable = false
         }
 
@@ -131,6 +131,7 @@ final class BatteryService: ObservableObject {
             adapterInfo: adapterInfo,
             batteryPower: smcState.batteryPower,
             notChargingReason: ioRegState.notChargingReason,
+            chargerInhibitReason: ioRegState.chargerInhibitReason,
             timeToEmpty: ioKitState.timeToEmpty,
             timeToFull: ioKitState.timeToFull
         )
@@ -331,9 +332,9 @@ final class BatteryService: ObservableObject {
 
     // MARK: - IORegistry (adapter details, not-charging reason)
 
-    private func readIORegistryBattery() -> (adapterInfo: AdapterInfo?, notChargingReason: UInt64?) {
+    private func readIORegistryBattery() -> (adapterInfo: AdapterInfo?, notChargingReason: UInt64?, chargerInhibitReason: UInt64?) {
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
-        guard service != IO_OBJECT_NULL else { return (nil, nil) }
+        guard service != IO_OBJECT_NULL else { return (nil, nil, nil) }
         defer { IOObjectRelease(service) }
 
         // Read only the keys we need — NOT CreateCFProperties which copies the entire 16KB+ dict
@@ -398,8 +399,9 @@ final class BatteryService: ObservableObject {
             )
         }
 
-        // NotChargingReason from ChargerData (CF bridges as Int or UInt64)
+        // NotChargingReason and ChargerInhibitReason from ChargerData
         var notChargingReason: UInt64?
+        var chargerInhibitReason: UInt64?
         if let chargerData = chargerDict {
             if let raw = chargerData["NotChargingReason"] {
                 if let val = raw as? UInt64 {
@@ -409,7 +411,7 @@ final class BatteryService: ObservableObject {
                 }
                 if notChargingReason != lastLoggedNotChargingReason {
                     let hex = String(notChargingReason ?? 0, radix: 16, uppercase: true)
-                    log.info("NotChargingReason: \(notChargingReason ?? 0) (0x\(hex, privacy: .public))")
+                    log.notice("NotChargingReason: \(notChargingReason ?? 0, privacy: .public) (0x\(hex, privacy: .public))")
                     lastLoggedNotChargingReason = notChargingReason
                 }
             }
@@ -419,9 +421,10 @@ final class BatteryService: ObservableObject {
                 var val: UInt64 = 0
                 if let v = raw as? UInt64 { val = v }
                 else if let v = raw as? Int { val = UInt64(bitPattern: Int64(v)) }
+                chargerInhibitReason = val
                 if val != lastLoggedInhibitReason {
                     let hex = String(val, radix: 16, uppercase: true)
-                    log.info("ChargerInhibitReason: \(val) (0x\(hex, privacy: .public))")
+                    log.notice("ChargerInhibitReason: \(val, privacy: .public) (0x\(hex, privacy: .public))")
                     lastLoggedInhibitReason = val
                 }
             }
@@ -441,7 +444,7 @@ final class BatteryService: ObservableObject {
             }
         }
 
-        return (adapterInfo, notChargingReason)
+        return (adapterInfo, notChargingReason, chargerInhibitReason)
     }
 
     // MARK: - Polling

@@ -25,9 +25,9 @@ enum HelperState {
                     withIntermediateDirectories: true,
                     attributes: [.posixPermissions: 0o700]
                 )
-                log.info("Created state directory: \(dir)")
+                log.info("Created state directory: \(dir, privacy: .public)")
             } catch {
-                log.error("Failed to create state directory: \(error.localizedDescription)")
+                log.error("Failed to create state directory: \(error.localizedDescription, privacy: .public)")
             }
         }
         // Always enforce permissions — createDirectory ignores attributes if dir exists,
@@ -35,7 +35,7 @@ enum HelperState {
         do {
             try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir)
         } catch {
-            log.error("Failed to enforce directory permissions: \(error.localizedDescription)")
+            log.error("Failed to enforce directory permissions: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -50,7 +50,7 @@ enum HelperState {
             )
             log.info("State written: \(state.rawValue, privacy: .public)")
         } catch {
-            log.error("Failed to write state: \(error.localizedDescription)")
+            log.error("Failed to write state: \(error.localizedDescription, privacy: .public)")
         }
     }
 

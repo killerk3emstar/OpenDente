@@ -89,7 +89,7 @@ struct GeneralTab: View {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            Logger(subsystem: "com.opendente.app", category: "Settings").error("Failed to set launch at login: \(error.localizedDescription)")
+            Logger(subsystem: "com.opendente.app", category: "Settings").error("Failed to set launch at login: \(error.localizedDescription, privacy: .public)")
         }
     }
 }
@@ -515,6 +515,15 @@ struct BatteryInfoTab: View {
                 if let version = charging.helperVersion {
                     infoRow("Helper Version", value: version)
                 }
+            }
+
+            Section {
+                Button("Export Diagnostic Report...") {
+                    DiagnosticExporter.exportWithSavePanel()
+                }
+                Text("Exports system info, current state, settings, and recent logs as a text file for troubleshooting.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

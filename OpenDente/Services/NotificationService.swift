@@ -31,6 +31,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         case topUpComplete
         case heatProtection
         case dischargeComplete
+        case systemChargeLimitConflict
+        case inhibitFailed
     }
 
     /// Last event sent — used to prevent duplicate notifications.
@@ -56,9 +58,9 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
             do {
                 let granted = try await center.requestAuthorization(options: [.alert, .sound])
-                log.info("Notification permission: \(granted ? "granted" : "denied")")
+                log.info("Notification permission: \(granted ? "granted" : "denied", privacy: .public)")
             } catch {
-                log.error("Notification permission error: \(error.localizedDescription)")
+                log.error("Notification permission error: \(error.localizedDescription, privacy: .public)")
             }
 
             NSApp.setActivationPolicy(.accessory)
@@ -85,6 +87,12 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         case .dischargeComplete:
             content.title = "Discharge Complete"
             content.body = "Battery has discharged to your charge limit."
+        case .systemChargeLimitConflict:
+            content.title = "System Charge Limit Active"
+            content.body = "macOS Charge Limit is preventing charging. Lower it in System Settings > Battery."
+        case .inhibitFailed:
+            content.title = "Charging Control Failed"
+            content.body = "Unable to stop charging. Try unplugging and re-plugging the charger."
         }
         content.sound = .default
 
@@ -95,7 +103,7 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         )
         UNUserNotificationCenter.current().add(request) { error in
             if let error {
-                log.error("Failed to deliver notification: \(error.localizedDescription)")
+                log.error("Failed to deliver notification: \(error.localizedDescription, privacy: .public)")
             }
         }
     }
@@ -110,6 +118,8 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         case .topUpComplete:      return settings.notifyTopUpComplete
         case .heatProtection:     return settings.notifyHeatProtection
         case .dischargeComplete:  return settings.notifyDischargeComplete
+        case .systemChargeLimitConflict: return true  // always notify — important warning
+        case .inhibitFailed:            return true  // always notify — safety critical
         }
     }
 }

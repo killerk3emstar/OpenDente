@@ -50,8 +50,9 @@ struct PowerFlowView: View {
             return .pluggedInStopping
         }
 
-        // Actively charging with measurable battery power
-        if battery.isCharging && bp > 0.1 {
+        // Actively charging with measurable battery power.
+        // SMC battery power updates before IOKit flips isCharging — use it as early signal.
+        if (battery.isCharging || mode == .charging || mode == .topUp) && bp > 0.1 {
             return .pluggedInCharging
         }
 
@@ -60,9 +61,10 @@ struct PowerFlowView: View {
             return .pluggedInTrickleCharging
         }
 
-        // Mode says charging but IOKit hasn't confirmed
+        // Mode says charging but IOKit hasn't confirmed.
+        // If system charge limit is blocking, show paused (not "Starting..." forever).
         if mode == .charging && !battery.isCharging {
-            return .pluggedInStarting
+            return battery.systemChargeLimitActive ? .pluggedInPaused : .pluggedInStarting
         }
 
         // Default: plugged in, no battery flow (paused/sailing/heat/idle)

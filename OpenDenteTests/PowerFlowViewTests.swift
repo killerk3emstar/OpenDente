@@ -222,6 +222,7 @@ final class PowerFlowViewTests: XCTestCase {
             adapterInfo: nil,
             batteryPower: batteryPower,
             notChargingReason: nil,
+            chargerInhibitReason: nil,
             timeToEmpty: nil,
             timeToFull: nil
         )

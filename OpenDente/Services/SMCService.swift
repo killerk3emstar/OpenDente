@@ -342,16 +342,16 @@ final class SMCService: @unchecked Sendable {
         )
 
         if result != KERN_SUCCESS {
-            smcLog.error("IOConnectCallStructMethod failed: kern_return=\(result) (0x\(String(result, radix: 16))) key=\(keyStr) cmd=\(input.data8)")
+            smcLog.error("IOConnectCallStructMethod failed: kern_return=\(result, privacy: .public) (0x\(String(result, radix: 16), privacy: .public)) key=\(keyStr, privacy: .public) cmd=\(input.data8, privacy: .public)")
             throw SMCError.readFailed(keyStr, UInt8(result & 0xFF))
         }
 
         if outputData.result != 0 {
             // 132 (0x84) = key not found — expected for optional keys, don't spam logs
             if outputData.result == 132 {
-                smcLog.debug("SMC key not found: \(keyStr)")
+                smcLog.debug("SMC key not found: \(keyStr, privacy: .public)")
             } else {
-                smcLog.error("SMC result error: result=\(outputData.result) key=\(keyStr) cmd=\(input.data8)")
+                smcLog.error("SMC result error: result=\(outputData.result, privacy: .public) key=\(keyStr, privacy: .public) cmd=\(input.data8, privacy: .public)")
             }
             throw SMCError.readFailed(keyStr, outputData.result)
         }

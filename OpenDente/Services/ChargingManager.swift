@@ -32,8 +32,9 @@ final class ChargingManager: ObservableObject {
     @Published internal(set) var mode: ChargingMode = .idle {
         didSet {
             if mode != oldValue {
-                log.info("Mode: \(oldValue.displayName) → \(self.mode.displayName)")
+                log.notice("Mode: \(oldValue.displayName, privacy: .public) → \(self.mode.displayName, privacy: .public)")
                 inhibitRetryCount = 0
+                if mode != .charging && mode != .topUp { systemChargeLimitConflict = false }
                 updateMagSafeLED()
             }
         }
@@ -66,12 +67,24 @@ final class ChargingManager: ObservableObject {
     /// Internal for testability.
     var lastInhibitTime: Date?
 
+    /// Timestamp of the very first inhibit in the current cycle — used for total elapsed logging.
+    var firstInhibitTime: Date?
+
     /// Number of verification re-sends in the current inhibit cycle.
     /// Reset when IOKit confirms not charging or mode changes.
     var inhibitRetryCount: Int = 0
 
     /// Whether the enable-mismatch diagnostic has been logged for the current charging cycle.
     private var didLogEnableMismatch = false
+
+    /// Whether we already notified the user about inhibit retry exhaustion this cycle.
+    /// Reset when inhibit is confirmed or mode changes.
+    /// Internal for testability.
+    private(set) var didNotifyInhibitExhausted = false
+
+    /// True when macOS system Charge Limit is blocking our attempt to charge.
+    /// We set CHTE to enable, but the system's separate firmware gate stays closed.
+    @Published private(set) var systemChargeLimitConflict = false
 
     /// Last known IOKit isCharging state — used by LED to reflect hardware truth
     /// regardless of which evaluateState code path ran.
@@ -94,7 +107,7 @@ final class ChargingManager: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
-        log.info("Starting — limit: \(self.settings.chargeLimit)%, sailing: \(self.settings.sailingModeEnabled ? "on" : "off"), heat protection: \(self.settings.heatProtectionEnabled ? "on" : "off")")
+        log.notice("Starting — limit: \(self.settings.chargeLimit, privacy: .public)%, sailing: \(self.settings.sailingModeEnabled ? "on" : "off", privacy: .public), heat protection: \(self.settings.heatProtectionEnabled ? "on" : "off", privacy: .public)")
         detectChargingAPI()
         connectToHelper()
 
@@ -130,7 +143,7 @@ final class ChargingManager: ObservableObject {
     func connectToHelper() {
         let status = HelperInstaller.status
         isHelperInstalled = (status == .enabled)
-        log.info("Helper status: \(HelperInstaller.statusDescription)")
+        log.info("Helper status: \(HelperInstaller.statusDescription, privacy: .public)")
 
         if isHelperInstalled {
             let client = HelperClient.shared
@@ -162,7 +175,7 @@ final class ChargingManager: ObservableObject {
         client.getVersion { [weak self] version in
             Task { @MainActor in
                 self?.helperVersion = version
-                log.info("Helper version: \(version)")
+                log.info("Helper version: \(version, privacy: .public)")
                 // Reset LED cache — helper may have restarted with default LED state
                 self?.lastLEDColor = nil
                 self?.updateMagSafeLED()
@@ -198,13 +211,13 @@ final class ChargingManager: ObservableObject {
         // Try Tahoe keys first (newer)
         if smc.keyExists("CHTE") {
             chargingAPI = .tahoe
-            log.info("Detected Tahoe charging API (CHTE/CHIE)")
+            log.notice("Detected Tahoe charging API (CHTE/CHIE)")
         } else if smc.keyExists("CH0B") {
             chargingAPI = .legacy
-            log.info("Detected legacy charging API (CH0B/CH0C)")
+            log.notice("Detected legacy charging API (CH0B/CH0C)")
         } else {
             chargingAPI = .unknown
-            log.info("No charging control keys detected")
+            log.notice("No charging control keys detected")
         }
 
         logDiagnosticDump()
@@ -228,7 +241,14 @@ final class ChargingManager: ObservableObject {
         var keyLines: [String] = []
         for key in diagnosticKeys {
             if let info = smc.keyInfo(key) {
-                keyLines.append("  \(key): exists=true  type=\(info.type)  size=\(info.size)")
+                let valueStr: String
+                if let value = smc.readKeyOptional(key) {
+                    let hex = value.bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+                    valueStr = "  value=[\(hex)]"
+                } else {
+                    valueStr = "  value=<unreadable>"
+                }
+                keyLines.append("  \(key): exists=true  type=\(info.type)  size=\(info.size)\(valueStr)")
             } else {
                 keyLines.append("  \(key): exists=false")
             }
@@ -243,13 +263,13 @@ final class ChargingManager: ObservableObject {
         case .unknown: apiName = "unknown"
         }
 
-        log.info("""
+        log.notice("""
         === OpenDente Diagnostic Dump ===
         macOS: \(osStr, privacy: .public)
         Model: \(model, privacy: .public)
         Charging API: \(apiName, privacy: .public)
         \(keyLines.joined(separator: "\n"), privacy: .public)
-        Battery: \(pct)%, charging=\(state.isCharging), pluggedIn=\(state.isPluggedIn)
+        Battery: \(pct, privacy: .public)%, charging=\(state.isCharging, privacy: .public), pluggedIn=\(state.isPluggedIn, privacy: .public)
         =================================
         """)
     }
@@ -276,9 +296,10 @@ final class ChargingManager: ObservableObject {
         // even though the charger is physically connected. Don't kill our own discharge.
         guard state.isPluggedIn || mode == .discharging else {
             if mode == .topUp {
-                log.info("Top Up ended: unplugged at \(state.percentage)%")
+                log.info("Top Up ended: unplugged at \(state.percentage, privacy: .public)%")
             }
             // Clean slate — no pending inhibit verification on battery
+            firstInhibitTime = nil
             lastInhibitTime = nil
             inhibitRetryCount = 0
             mode = .onBattery
@@ -291,7 +312,7 @@ final class ChargingManager: ObservableObject {
                 // Reset hysteresis timer on every spike (including re-spikes during cooldown)
                 heatProtectionTimer = Date()
                 if mode != .heatProtection {
-                    log.warning("Heat protection: \(temp, format: .fixed(precision: 1))°C ≥ \(self.settings.heatProtectionTemp)°C at \(state.percentage)%")
+                    log.warning("Heat protection: \(temp, format: .fixed(precision: 1), privacy: .public)°C ≥ \(self.settings.heatProtectionTemp, format: .fixed(precision: 1), privacy: .public)°C at \(state.percentage, privacy: .public)%")
                     if mode == .discharging {
                         forceDischarge(false)
                     }
@@ -303,7 +324,7 @@ final class ChargingManager: ObservableObject {
                 if let timer = heatProtectionTimer {
                     // Hysteresis: wait 5 minutes after temp last exceeded threshold
                     if Date().timeIntervalSince(timer) >= 300 {
-                        log.info("Heat protection ended: \(temp, format: .fixed(precision: 1))°C < \(self.settings.heatProtectionTemp)°C, cooldown elapsed")
+                        log.info("Heat protection ended: \(temp, format: .fixed(precision: 1), privacy: .public)°C < \(self.settings.heatProtectionTemp, format: .fixed(precision: 1), privacy: .public)°C, cooldown elapsed")
                         heatProtectionTimer = nil
                         // Fall through to normal evaluation
                     } else {
@@ -316,6 +337,7 @@ final class ChargingManager: ObservableObject {
 
         // Top Up mode — stay until unplugged (guard above) or user cancels
         if mode == .topUp {
+            updateSystemChargeLimitConflict(state)
             return
         }
 
@@ -329,13 +351,13 @@ final class ChargingManager: ObservableObject {
             // Real unplug detection: during force discharge, IOKit reports isPluggedIn=false.
             // A real unplug is when isPluggedIn=false AND adapter power is gone.
             if !state.isPluggedIn && (state.adapterPower ?? 0) < 0.1 {
-                log.info("Discharge ended: charger unplugged at \(pct)%")
+                log.info("Discharge ended: charger unplugged at \(pct, privacy: .public)%")
                 forceDischarge(false)
                 mode = .onBattery
                 return
             }
             if pct <= settings.chargeLimit {
-                log.info("Discharge reached limit: \(pct)% ≤ \(self.settings.chargeLimit)%")
+                log.info("Discharge reached limit: \(pct, privacy: .public)% ≤ \(self.settings.chargeLimit, privacy: .public)%")
                 stopDischarge()
                 // Fall through to normal evaluation
             } else {
@@ -357,7 +379,7 @@ final class ChargingManager: ObservableObject {
 
             if pct >= limit {
                 if mode != .paused {
-                    log.info("Limit reached: \(pct)% ≥ \(limit)% → paused")
+                    log.notice("Limit reached: \(pct, privacy: .public)% ≥ \(limit, privacy: .public)% → paused")
                     if mode != .sailing && mode != .heatProtection {
                         inhibitCharging()
                     }
@@ -367,7 +389,7 @@ final class ChargingManager: ObservableObject {
                 if mode == .charging {
                     // Keep charging toward limit — don't interrupt
                 } else if mode != .sailing {
-                    log.info("Sailing: \(pct)% in range \(lowerBound)–\(limit)%")
+                    log.notice("Sailing: \(pct, privacy: .public)% in range \(lowerBound, privacy: .public)–\(limit, privacy: .public)%")
                     if mode != .paused && mode != .heatProtection {
                         inhibitCharging()
                     }
@@ -375,7 +397,7 @@ final class ChargingManager: ObservableObject {
                 }
             } else {
                 if mode != .charging {
-                    log.info("Below range: \(pct)% < \(lowerBound)% → charging to \(limit)%")
+                    log.notice("Below range: \(pct, privacy: .public)% < \(lowerBound, privacy: .public)% → charging to \(limit, privacy: .public)%")
                     enableCharging()
                     mode = .charging
                 }
@@ -384,7 +406,7 @@ final class ChargingManager: ObservableObject {
             // No sailing mode — simple limit
             if pct >= limit {
                 if mode != .paused {
-                    log.info("Limit reached: \(pct)% ≥ \(limit)% → paused")
+                    log.notice("Limit reached: \(pct, privacy: .public)% ≥ \(limit, privacy: .public)% → paused")
                     if mode != .heatProtection {
                         inhibitCharging()
                     }
@@ -392,7 +414,7 @@ final class ChargingManager: ObservableObject {
                 }
             } else {
                 if mode != .charging {
-                    log.info("Below limit: \(pct)% < \(limit)% → charging")
+                    log.notice("Below limit: \(pct, privacy: .public)% < \(limit, privacy: .public)% → charging")
                     enableCharging()
                     mode = .charging
                 }
@@ -401,7 +423,7 @@ final class ChargingManager: ObservableObject {
 
         // Automatic discharge: if battery > limit and auto-discharge is on
         if settings.automaticDischarge && pct > limit && mode == .paused {
-            log.info("Auto-discharge: \(pct)% > \(limit)%")
+            log.notice("Auto-discharge: \(pct, privacy: .public)% > \(limit, privacy: .public)%")
             startDischarge()
         }
 
@@ -411,14 +433,17 @@ final class ChargingManager: ObservableObject {
         // IOKit can lag 15-30s on Apple Silicon before reflecting the new state,
         // so debounce at 15s and limit to 3 retries to avoid unnecessary SMC writes.
         let inhibitElapsed = lastInhibitTime.map { Date().timeIntervalSince($0) } ?? .infinity
+        let totalInhibitElapsed = firstInhibitTime.map { Date().timeIntervalSince($0) } ?? .infinity
         if (mode == .paused || mode == .sailing || mode == .heatProtection)
             && state.isCharging {
             if inhibitElapsed >= 15 && inhibitRetryCount < 3 {
                 inhibitRetryCount += 1
-                log.warning("IOKit still reports charging in \(self.mode.displayName) mode — re-sending inhibit (\(self.inhibitRetryCount)/3, \(String(format: "%.0f", inhibitElapsed), privacy: .public)s since first inhibit) | IOKit: isCharging=\(state.isCharging), pct=\(pct)%, adapterPower=\(String(format: "%.1f", state.adapterPower ?? -1), privacy: .public)W")
+                log.warning("IOKit still reports charging in \(self.mode.displayName, privacy: .public) mode — re-sending inhibit (\(self.inhibitRetryCount, privacy: .public)/3, \(String(format: "%.0f", totalInhibitElapsed), privacy: .public)s since first inhibit) | IOKit: isCharging=\(state.isCharging, privacy: .public), pct=\(pct, privacy: .public)%, adapterPower=\(String(format: "%.1f", state.adapterPower ?? -1), privacy: .public)W, batteryPower=\(String(format: "%.1f", state.batteryPower ?? 0), privacy: .public)W")
                 inhibitCharging()
-            } else if inhibitRetryCount >= 3 {
-                log.error("Inhibit retry exhausted (3/3, \(String(format: "%.0f", inhibitElapsed), privacy: .public)s) — SMC writes may be overridden by system | IOKit: isCharging=\(state.isCharging), pct=\(pct)%")
+            } else if inhibitRetryCount >= 3 && !didNotifyInhibitExhausted {
+                didNotifyInhibitExhausted = true
+                log.error("Inhibit retry exhausted (3/3, \(String(format: "%.0f", totalInhibitElapsed), privacy: .public)s since first inhibit) — SMC writes may be overridden by system | IOKit: isCharging=\(state.isCharging, privacy: .public), pct=\(pct, privacy: .public)%, adapterPower=\(String(format: "%.1f", state.adapterPower ?? -1), privacy: .public)W, batteryPower=\(String(format: "%.1f", state.batteryPower ?? 0), privacy: .public)W")
+                NotificationService.shared.send(.inhibitFailed, settings: settings)
             }
         } else if (mode == .paused || mode == .sailing || mode == .heatProtection)
                     && !state.isCharging && lastInhibitTime != nil
@@ -426,21 +451,26 @@ final class ChargingManager: ObservableObject {
             // Require ≥2s since inhibit write to avoid confirming in the same evaluateState
             // call that sent the inhibit (e.g. cable plug with stale SMC inhibit).
             if inhibitRetryCount > 0 {
-                log.info("IOKit confirmed: charging stopped in \(self.mode.displayName) mode (after \(self.inhibitRetryCount) retries, \(String(format: "%.0f", inhibitElapsed), privacy: .public)s)")
+                log.notice("IOKit confirmed: charging stopped in \(self.mode.displayName, privacy: .public) mode (after \(self.inhibitRetryCount, privacy: .public) retries, \(String(format: "%.0f", totalInhibitElapsed), privacy: .public)s)")
             } else {
-                log.info("IOKit confirmed: charging stopped in \(self.mode.displayName) mode")
+                log.notice("IOKit confirmed: charging stopped in \(self.mode.displayName, privacy: .public) mode")
             }
             inhibitRetryCount = 0
+            firstInhibitTime = nil
             lastInhibitTime = nil
+            didNotifyInhibitExhausted = false
         }
 
-        // Diagnostic: if we enabled charging but IOKit says not charging,
-        // read back CHTE/CH0B to check if the system overwrote our write.
-        // Log once per enable cycle to avoid spamming every 2s.
-        if mode == .charging && !state.isCharging && state.isPluggedIn && !didLogEnableMismatch {
+        // System charge limit conflict detection.
+        updateSystemChargeLimitConflict(state)
+
+        // Diagnostic: if we enabled charging but IOKit says not charging and it's
+        // NOT the system charge limit, log SMC readback once per cycle for diagnostics.
+        if mode == .charging && !state.isCharging && state.isPluggedIn
+            && !state.systemChargeLimitActive && !didLogEnableMismatch {
             if let val = smc.readKeyOptional("CHTE") {
                 let hex = val.bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
-                log.warning("Enable mismatch: mode=charging but isCharging=false — CHTE readback: [\(hex, privacy: .public)] (system may be overriding via separate gate)")
+                log.warning("Enable mismatch: mode=charging but isCharging=false — CHTE readback: [\(hex, privacy: .public)]")
             } else if let val = smc.readKeyOptional("CH0B") {
                 let hex = val.bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
                 log.warning("Enable mismatch: mode=charging but isCharging=false — CH0B readback: [\(hex, privacy: .public)]")
@@ -458,7 +488,7 @@ final class ChargingManager: ObservableObject {
     /// charge to 100% during sleep. Also stops discharge (pointless during sleep).
     func handleWillSleep() {
         modeBeforeSleep = mode
-        log.info("Will sleep: mode=\(self.mode.displayName), stopCharging=\(self.settings.stopChargingWhenSleeping), disableSleep=\(self.settings.disableSleepUntilChargeLimit)")
+        log.notice("Will sleep: mode=\(self.mode.displayName, privacy: .public), stopCharging=\(self.settings.stopChargingWhenSleeping, privacy: .public), disableSleep=\(self.settings.disableSleepUntilChargeLimit, privacy: .public)")
 
         // Always stop discharge before sleep — no system load means meaningless drain
         if mode == .discharging {
@@ -472,7 +502,7 @@ final class ChargingManager: ObservableObject {
         }
         // If mode is .onBattery or .idle, there's nothing to inhibit
         guard mode != .onBattery && mode != .idle else {
-            log.info("Will sleep: mode is \(self.mode.displayName) — nothing to inhibit")
+            log.info("Will sleep: mode is \(self.mode.displayName, privacy: .public) — nothing to inhibit")
             return
         }
 
@@ -491,7 +521,7 @@ final class ChargingManager: ObservableObject {
             sendLEDColor(color)
         }
 
-        log.info("Will sleep: inhibited charging (stopChargingWhenSleeping)")
+        log.notice("Will sleep: inhibited charging (stopChargingWhenSleeping)")
     }
 
     /// Called by AppDelegate after macOS wakes from sleep.
@@ -499,12 +529,18 @@ final class ChargingManager: ObservableObject {
     func handleDidWake(_ currentState: BatteryState) {
         let previousMode = modeBeforeSleep
         let pct = currentState.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
-        log.info("Did wake: modeBeforeSleep=\(previousMode?.displayName ?? "nil"), battery=\(pct)%, pluggedIn=\(currentState.isPluggedIn), isCharging=\(currentState.isCharging)")
+        log.notice("Did wake: modeBeforeSleep=\(previousMode?.displayName ?? "nil", privacy: .public), battery=\(pct, privacy: .public)%, pluggedIn=\(currentState.isPluggedIn, privacy: .public), isCharging=\(currentState.isCharging, privacy: .public)")
 
         modeBeforeSleep = nil
         // Clear stale verification state from before sleep
+        firstInhibitTime = nil
         lastInhibitTime = nil
         inhibitRetryCount = 0
+        didNotifyInhibitExhausted = false
+        // LED hardware state may differ from lastLEDColor — the helper's sleep
+        // callback writes ACLC directly without updating the app's tracking variable.
+        // Reset so updateMagSafeLED() re-sends unconditionally after wake.
+        lastLEDColor = nil
 
         // If we were discharging, handleWillSleep stopped forceDischarge but left mode
         // as .discharging. Reset to .onBattery so evaluateState doesn't get stuck in the
@@ -524,7 +560,7 @@ final class ChargingManager: ObservableObject {
             resyncSMCAfterWake()
         }
 
-        log.info("Did wake: evaluated → mode=\(self.mode.displayName)")
+        log.notice("Did wake: evaluated → mode=\(self.mode.displayName, privacy: .public)")
     }
 
     /// Re-send the SMC command for the current mode after wake.
@@ -566,14 +602,37 @@ final class ChargingManager: ObservableObject {
             && (mode == .charging || mode == .discharging)
 
         if shouldPrevent && !isPreventingSleep {
-            log.info("Sleep assertion: preventing sleep (mode=\(self.mode.displayName), \(pct)% → \(self.settings.chargeLimit)%)")
+            log.info("Sleep assertion: preventing sleep (mode=\(self.mode.displayName, privacy: .public), \(pct, privacy: .public)% → \(self.settings.chargeLimit, privacy: .public)%)")
             isPreventingSleep = sleepAssertion.preventSleep(
                 reason: "OpenDente: Charging to \(settings.chargeLimit)%"
             )
         } else if !shouldPrevent && isPreventingSleep {
-            log.info("Sleep assertion: released (mode=\(self.mode.displayName), pct=\(pct)%, limit=\(self.settings.chargeLimit)%, pluggedIn=\(state.isPluggedIn))")
+            log.info("Sleep assertion: released (mode=\(self.mode.displayName, privacy: .public), pct=\(pct, privacy: .public)%, limit=\(self.settings.chargeLimit, privacy: .public)%, pluggedIn=\(state.isPluggedIn, privacy: .public))")
             sleepAssertion.allowSleep()
             isPreventingSleep = false
+        }
+    }
+
+    // MARK: - System Charge Limit Conflict
+
+    /// Detect when macOS system Charge Limit (26.4+) is blocking our attempt to charge.
+    /// The system uses a separate firmware gate from CHTE — both must be open.
+    /// NotChargingReason bit 24 (0x1000000) = system-level inhibit.
+    private func updateSystemChargeLimitConflict(_ state: BatteryState) {
+        let wantsToCharge = mode == .charging || mode == .topUp
+        let batteryReceivingPower = (state.batteryPower ?? 0) > 0.1
+
+        if wantsToCharge && !state.isCharging && state.isPluggedIn
+            && state.systemChargeLimitActive && !batteryReceivingPower {
+            if !systemChargeLimitConflict {
+                systemChargeLimitConflict = true
+                let hex = String(state.notChargingReason ?? 0, radix: 16, uppercase: true)
+                log.warning("System charge limit conflict: NotChargingReason=0x\(hex, privacy: .public) — system is blocking via separate gate")
+                NotificationService.shared.send(.systemChargeLimitConflict, settings: settings)
+            }
+        } else if systemChargeLimitConflict {
+            systemChargeLimitConflict = false
+            log.notice("System charge limit conflict cleared")
         }
     }
 
@@ -587,10 +646,10 @@ final class ChargingManager: ObservableObject {
     /// Start Top Up - temporarily charge to 100%
     func startTopUp() {
         guard canControlCharging else {
-            log.warning("Cannot start Top Up: \(self.controlUnavailableReason)")
+            log.warning("Cannot start Top Up: \(self.controlUnavailableReason, privacy: .public)")
             return
         }
-        log.info("Top Up started at \(self.battery.batteryState.percentage)% (limit was \(self.settings.chargeLimit)%)")
+        log.notice("Top Up started at \(self.battery.batteryState.percentage, privacy: .public)% (limit was \(self.settings.chargeLimit, privacy: .public)%)")
 
         enableCharging()
         mode = .topUp
@@ -600,7 +659,7 @@ final class ChargingManager: ObservableObject {
     /// next poll will re-evaluate the correct mode.
     func cancelTopUp() {
         guard mode == .topUp else { return }
-        log.info("Top Up cancelled by user at \(self.battery.batteryState.percentage)%")
+        log.notice("Top Up cancelled by user at \(self.battery.batteryState.percentage, privacy: .public)%")
 
         inhibitCharging()
         mode = .idle
@@ -609,17 +668,17 @@ final class ChargingManager: ObservableObject {
     /// Manually start discharge
     func startDischarge() {
         guard canControlCharging else {
-            log.warning("Cannot start discharge: \(self.controlUnavailableReason)")
+            log.warning("Cannot start discharge: \(self.controlUnavailableReason, privacy: .public)")
             return
         }
-        log.info("Discharge started at \(self.battery.batteryState.percentage)%")
+        log.notice("Discharge started at \(self.battery.batteryState.percentage, privacy: .public)%")
         forceDischarge(true)
         mode = .discharging
     }
 
     /// Stop discharge
     func stopDischarge() {
-        log.info("Discharge stopped at \(self.battery.batteryState.percentage)%")
+        log.notice("Discharge stopped at \(self.battery.batteryState.percentage, privacy: .public)%")
         forceDischarge(false)
         mode = .idle
     }
@@ -627,10 +686,10 @@ final class ChargingManager: ObservableObject {
     /// Manually pause charging at current level
     func pauseCharging() {
         guard canControlCharging else {
-            log.warning("Cannot pause charging: \(self.controlUnavailableReason)")
+            log.warning("Cannot pause charging: \(self.controlUnavailableReason, privacy: .public)")
             return
         }
-        log.info("Charging paused manually at \(self.battery.batteryState.percentage)%")
+        log.notice("Charging paused manually at \(self.battery.batteryState.percentage, privacy: .public)%")
         inhibitCharging()
         mode = .paused
     }
@@ -652,11 +711,12 @@ final class ChargingManager: ObservableObject {
         }
 
         lastInhibitTime = Date()
+        if firstInhibitTime == nil { firstInhibitTime = lastInhibitTime }
         helper.inhibitCharging { [weak self] success, error in
             if success {
                 log.info("SMC: inhibit written — waiting for IOKit confirmation")
             } else {
-                log.error("Failed to inhibit charging: \(error ?? "unknown error")")
+                log.error("Failed to inhibit charging: \(error ?? "unknown error", privacy: .public)")
                 Task { @MainActor in self?.mode = .idle }
             }
         }
@@ -671,14 +731,16 @@ final class ChargingManager: ObservableObject {
         }
 
         // End any pending inhibit verification cycle
+        firstInhibitTime = nil
         lastInhibitTime = nil
         inhibitRetryCount = 0
+        didNotifyInhibitExhausted = false
 
         helper.enableCharging { [weak self] success, error in
             if success {
                 log.info("SMC: enable written")
             } else {
-                log.error("Failed to enable charging: \(error ?? "unknown error")")
+                log.error("Failed to enable charging: \(error ?? "unknown error", privacy: .public)")
                 Task { @MainActor in self?.mode = .idle }
             }
         }
@@ -694,9 +756,9 @@ final class ChargingManager: ObservableObject {
 
         helper.forceDischarge(enable: enable) { [weak self] success, error in
             if success {
-                log.info("Force discharge: \(enable)")
+                log.info("Force discharge: \(enable, privacy: .public)")
             } else {
-                log.error("Failed to set discharge: \(error ?? "unknown error")")
+                log.error("Failed to set discharge: \(error ?? "unknown error", privacy: .public)")
                 Task { @MainActor in self?.mode = .idle }
             }
         }
@@ -706,7 +768,7 @@ final class ChargingManager: ObservableObject {
 
     /// Re-send current mode's SMC commands after helper reconnects.
     private func resyncChargingState() {
-        log.info("Resyncing charging state after helper reconnect (mode: \(self.mode.displayName))")
+        log.info("Resyncing charging state after helper reconnect (mode: \(self.mode.displayName, privacy: .public))")
         switch mode {
         case .charging, .topUp:
             enableCharging()
@@ -742,12 +804,16 @@ final class ChargingManager: ObservableObject {
 
         // LED reflects both mode intent AND IOKit truth:
         // - charging/topUp/discharging → always orange (we're actively controlling)
+        // - system charge limit conflict → green/off (system is blocking, not actually charging)
         // - inhibited modes → orange while IOKit still reports charging (transition),
         //   then green/off once IOKit confirms charging actually stopped.
         let isCharging = lastIsCharging
         let color: UInt8
         if mode == .onBattery || mode == .idle {
             color = HelperConstants.ledAuto
+        } else if systemChargeLimitConflict {
+            // System is blocking — LED should reflect "not charging" despite our intent
+            color = settings.magSafeLEDOffWhenInactive ? HelperConstants.ledOff : HelperConstants.ledGreen
         } else if mode == .discharging || mode == .charging || mode == .topUp {
             color = HelperConstants.ledOrange
         } else if isCharging {
@@ -770,7 +836,7 @@ final class ChargingManager: ObservableObject {
         lastLEDColor = color
         helper.setMagSafeLED(color: color) { success, error in
             if !success, let error {
-                log.debug("MagSafe LED not available: \(error)")
+                log.debug("MagSafe LED not available: \(error, privacy: .public)")
             }
         }
     }
@@ -799,7 +865,7 @@ final class ChargingManager: ObservableObject {
 
     /// Synchronous reset for app termination
     func resetToDefaultsSync() {
-        log.info("App terminating — resetting SMC to defaults")
+        log.notice("App terminating — resetting SMC to defaults")
         helper.resetToDefaultsSync(timeout: 2.0)
         sleepAssertion.allowSleep()
         isPreventingSleep = false

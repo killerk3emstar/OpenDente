@@ -48,7 +48,7 @@ final class HelperClient: @unchecked Sendable {
 
         conn.invalidationHandler = { [weak self] in
             guard let self else { return }
-            log.warning("XPC connection invalidated")
+            log.notice("XPC connection invalidated")
             self.lock.lock()
             self.connection = nil
             let intentional = self.isIntentionalDisconnect
@@ -81,7 +81,7 @@ final class HelperClient: @unchecked Sendable {
         connection = conn
         lock.unlock()
         startHeartbeat()
-        log.info("Connected to helper")
+        log.notice("Connected to helper")
     }
 
     /// Disconnect from the helper (intentional — suppresses auto-reconnect)
@@ -102,13 +102,13 @@ final class HelperClient: @unchecked Sendable {
     @MainActor
     private func scheduleReconnect() {
         guard reconnectAttempts < Self.maxReconnectAttempts else {
-            log.error("XPC reconnect failed after \(Self.maxReconnectAttempts) attempts — helper may need reinstallation")
+            log.notice("XPC reconnect failed after \(Self.maxReconnectAttempts, privacy: .public) attempts — helper may need reinstallation")
             return
         }
 
         let delay = Self.reconnectDelays[min(reconnectAttempts, Self.reconnectDelays.count - 1)]
         reconnectAttempts += 1
-        log.info("Scheduling XPC reconnect \(self.reconnectAttempts)/\(Self.maxReconnectAttempts) in \(delay)s")
+        log.info("Scheduling XPC reconnect \(self.reconnectAttempts, privacy: .public)/\(Self.maxReconnectAttempts, privacy: .public) in \(delay, privacy: .public)s")
 
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
@@ -160,7 +160,7 @@ final class HelperClient: @unchecked Sendable {
         withProxy { helper in
             helper.enableCharging { success, error in
                 if let error {
-                    log.error("enableCharging failed: \(error)")
+                    log.error("enableCharging failed: \(error, privacy: .public)")
                 }
                 if let completion {
                     DispatchQueue.main.async { completion(success, error) }
@@ -173,7 +173,7 @@ final class HelperClient: @unchecked Sendable {
         withProxy { helper in
             helper.inhibitCharging { success, error in
                 if let error {
-                    log.error("inhibitCharging failed: \(error)")
+                    log.error("inhibitCharging failed: \(error, privacy: .public)")
                 }
                 if let completion {
                     DispatchQueue.main.async { completion(success, error) }
@@ -186,7 +186,7 @@ final class HelperClient: @unchecked Sendable {
         withProxy { helper in
             helper.forceDischarge(enable: enable) { success, error in
                 if let error {
-                    log.error("forceDischarge failed: \(error)")
+                    log.error("forceDischarge failed: \(error, privacy: .public)")
                 }
                 if let completion {
                     DispatchQueue.main.async { completion(success, error) }
@@ -199,7 +199,7 @@ final class HelperClient: @unchecked Sendable {
         withProxy { helper in
             helper.resetToDefaults { success, error in
                 if let error {
-                    log.error("resetToDefaults failed: \(error)")
+                    log.error("resetToDefaults failed: \(error, privacy: .public)")
                 }
                 if let completion {
                     DispatchQueue.main.async { completion(success, error) }
@@ -248,7 +248,7 @@ final class HelperClient: @unchecked Sendable {
         withProxy { helper in
             helper.setMagSafeLED(color: color) { success, error in
                 if let error {
-                    log.debug("setMagSafeLED failed: \(error)")
+                    log.debug("setMagSafeLED failed: \(error, privacy: .public)")
                 }
                 if let completion {
                     DispatchQueue.main.async { completion(success, error) }
@@ -267,7 +267,7 @@ final class HelperClient: @unchecked Sendable {
         }
         let result = semaphore.wait(timeout: .now() + timeout)
         if result == .timedOut {
-            log.warning("resetToDefaultsSync timed out after \(timeout)s — helper may not have reset")
+            log.warning("resetToDefaultsSync timed out after \(timeout, privacy: .public)s — helper may not have reset")
         }
     }
 
@@ -282,7 +282,7 @@ final class HelperClient: @unchecked Sendable {
         guard let conn else { return }
 
         let helper = conn.remoteObjectProxyWithErrorHandler { error in
-            log.error("XPC proxy error: \(error.localizedDescription)")
+            log.error("XPC proxy error: \(error.localizedDescription, privacy: .public)")
         }
 
         guard let proxy = helper as? HelperProtocol else {

@@ -75,6 +75,8 @@ func makeBatteryState(
     isPluggedIn: Bool = true,
     temperature: Double? = 25.0,
     adapterPower: Double? = nil,
+    notChargingReason: UInt64? = nil,
+    chargerInhibitReason: UInt64? = nil,
     timeToEmpty: Int? = nil,
     timeToFull: Int? = nil
 ) -> BatteryState {
@@ -94,7 +96,8 @@ func makeBatteryState(
         adapterPower: adapterPower,
         adapterInfo: nil,
         batteryPower: nil,
-        notChargingReason: nil,
+        notChargingReason: notChargingReason,
+        chargerInhibitReason: chargerInhibitReason,
         timeToEmpty: timeToEmpty,
         timeToFull: timeToFull
     )
@@ -1216,6 +1219,64 @@ final class ChargingManagerTests: XCTestCase {
         XCTAssertEqual(reInhibitCount, 1, "Should re-send inhibit when system still reports charging in sailing mode")
     }
 
+    func testVerification_exhaustionNotifiesOnce_notEveryPoll() {
+        manager.evaluateState(makeBatteryState(percentage: 90))
+        XCTAssertEqual(manager.mode, .paused)
+
+        // Exhaust all 3 retries
+        for _ in 1...3 {
+            manager.lastInhibitTime = Date().addingTimeInterval(-16)
+            manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        }
+        XCTAssertEqual(manager.inhibitRetryCount, 3)
+        XCTAssertFalse(manager.didNotifyInhibitExhausted,
+            "Not yet — exhaustion fires on the NEXT poll after count reaches 3")
+
+        // Next poll triggers the exhaustion branch
+        manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        XCTAssertTrue(manager.didNotifyInhibitExhausted,
+            "Flag should be set after retries exhausted")
+
+        // Further polls: flag stays true, no re-trigger
+        manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        XCTAssertTrue(manager.didNotifyInhibitExhausted,
+            "Flag should remain true — no repeated notification")
+    }
+
+    func testVerification_exhaustionFlagResetsWhenIOKitConfirms() {
+        manager.evaluateState(makeBatteryState(percentage: 90))
+
+        // Exhaust retries + trigger exhaustion
+        for _ in 1...3 {
+            manager.lastInhibitTime = Date().addingTimeInterval(-16)
+            manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        }
+        manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        XCTAssertTrue(manager.didNotifyInhibitExhausted)
+
+        // IOKit finally confirms charging stopped
+        manager.lastInhibitTime = Date().addingTimeInterval(-3)
+        manager.evaluateState(makeBatteryState(percentage: 90, isCharging: false))
+        XCTAssertFalse(manager.didNotifyInhibitExhausted,
+            "Flag should reset when IOKit confirms — allows future notification if it happens again")
+    }
+
+    func testVerification_exhaustionFlagResetsOnWake() {
+        manager.evaluateState(makeBatteryState(percentage: 90))
+
+        // Exhaust retries + trigger exhaustion
+        for _ in 1...3 {
+            manager.lastInhibitTime = Date().addingTimeInterval(-16)
+            manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        }
+        manager.evaluateState(makeBatteryState(percentage: 90, isCharging: true))
+        XCTAssertTrue(manager.didNotifyInhibitExhausted)
+
+        // Wake from sleep — stale state should be cleared
+        manager.handleDidWake(makeBatteryState(percentage: 90, isCharging: false))
+        XCTAssertFalse(manager.didNotifyInhibitExhausted)
+    }
+
     // =========================================================================
     // MARK: - MagSafe LED
     // =========================================================================
@@ -1575,6 +1636,28 @@ final class ChargingManagerTests: XCTestCase {
         XCTAssertEqual(manager.inhibitRetryCount, 0)
     }
 
+    func testDidWake_resetsLEDCache_soLEDIsResent() {
+        settings.controlMagSafeLED = true
+        manager.helperVersion = HelperConstants.helperVersion
+
+        // Charge → LED set to orange
+        manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertEqual(manager.lastLEDColor, HelperConstants.ledOrange)
+        mock.clearCalls()
+
+        // Sleep — helper's callback sets ACLC to 0x01 without updating lastLEDColor.
+        // Simulate: lastLEDColor stays orange (stale), but hardware is now off.
+        manager.handleWillSleep()
+
+        // Wake — still charging, plugged in. LED cache must be cleared so
+        // updateMagSafeLED() re-sends orange even though lastLEDColor was already orange.
+        manager.handleDidWake(makeBatteryState(percentage: 60, isCharging: true))
+
+        XCTAssertTrue(mock.calls.contains(.setMagSafeLED(color: HelperConstants.ledOrange)),
+            "After wake, LED should be re-sent even if color matches pre-sleep value")
+    }
+
     func testDidWake_clearsModeBeforeSleep() {
         manager.evaluateState(makeBatteryState(percentage: 60, isCharging: true))
         manager.handleWillSleep()
@@ -1810,6 +1893,113 @@ final class ChargingManagerTests: XCTestCase {
 
         manager.resetToDefaults()
         XCTAssertFalse(sleepMock.isPreventingSleep)
+    }
+
+    // =========================================================================
+    // MARK: - System Charge Limit Conflict
+    // =========================================================================
+
+    func testSystemChargeLimitConflict_detectedWhenSystemBlocks() {
+        // Enter charging mode first
+        manager.evaluateState(makeBatteryState(percentage: 50, isCharging: true))
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertFalse(manager.systemChargeLimitConflict)
+
+        // Next poll: system blocks charging via separate gate
+        // NotChargingReason bit 24 (0x1000000) = system-level inhibit
+        manager.evaluateState(makeBatteryState(
+            percentage: 50, isCharging: false, notChargingReason: 0x1000000))
+        XCTAssertEqual(manager.mode, .charging) // still in charging mode
+        XCTAssertTrue(manager.systemChargeLimitConflict)
+    }
+
+    func testSystemChargeLimitConflict_clearsWhenChargingResumes() {
+        // Enter conflict state
+        manager.evaluateState(makeBatteryState(percentage: 50, isCharging: true))
+        manager.evaluateState(makeBatteryState(
+            percentage: 50, isCharging: false, notChargingReason: 0x1000000))
+        XCTAssertTrue(manager.systemChargeLimitConflict)
+
+        // System limit raised — charging resumes
+        manager.evaluateState(makeBatteryState(
+            percentage: 50, isCharging: true, notChargingReason: 0))
+        XCTAssertFalse(manager.systemChargeLimitConflict)
+    }
+
+    func testSystemChargeLimitConflict_clearsOnUnplug() {
+        // Enter conflict state
+        manager.evaluateState(makeBatteryState(percentage: 50, isCharging: true))
+        manager.evaluateState(makeBatteryState(
+            percentage: 50, isCharging: false, notChargingReason: 0x1000000))
+        XCTAssertTrue(manager.systemChargeLimitConflict)
+
+        // Unplug — goes to onBattery, conflict clears
+        manager.evaluateState(makeBatteryState(
+            percentage: 50, isCharging: false, isPluggedIn: false))
+        XCTAssertEqual(manager.mode, .onBattery)
+        XCTAssertFalse(manager.systemChargeLimitConflict)
+    }
+
+    func testSystemChargeLimitConflict_notTriggeredByIOKitLag() {
+        // Enter charging mode
+        manager.evaluateState(makeBatteryState(percentage: 50, isCharging: true))
+
+        // IOKit lag: isCharging=false but NotChargingReason=0 (no system block)
+        manager.evaluateState(makeBatteryState(
+            percentage: 50, isCharging: false, notChargingReason: 0))
+        XCTAssertFalse(manager.systemChargeLimitConflict)
+    }
+
+    func testSystemChargeLimitConflict_notTriggeredWhenPaused() {
+        // At limit — paused
+        manager.evaluateState(makeBatteryState(percentage: 80))
+        XCTAssertEqual(manager.mode, .paused)
+
+        // System limit also active, but we're paused (not trying to charge)
+        manager.evaluateState(makeBatteryState(
+            percentage: 80, isCharging: false, notChargingReason: 0x1000000))
+        XCTAssertFalse(manager.systemChargeLimitConflict)
+    }
+
+    func testSystemChargeLimitConflict_detectedDuringTopUp() {
+        // Start top up
+        manager.evaluateState(makeBatteryState(percentage: 50, isCharging: true))
+        manager.startTopUp()
+        XCTAssertEqual(manager.mode, .topUp)
+        XCTAssertFalse(manager.systemChargeLimitConflict)
+
+        // System blocks charging during top up
+        manager.evaluateState(makeBatteryState(
+            percentage: 80, isCharging: false, notChargingReason: 0x1000000))
+        XCTAssertEqual(manager.mode, .topUp) // stays in topUp
+        XCTAssertTrue(manager.systemChargeLimitConflict)
+    }
+
+    func testSystemChargeLimitConflict_clearsWhenTopUpCancelled() {
+        // In conflict during top up
+        manager.evaluateState(makeBatteryState(percentage: 50, isCharging: true))
+        manager.startTopUp()
+        manager.evaluateState(makeBatteryState(
+            percentage: 80, isCharging: false, notChargingReason: 0x1000000))
+        XCTAssertTrue(manager.systemChargeLimitConflict)
+
+        // Cancel top up → mode changes → conflict clears
+        manager.cancelTopUp()
+        XCTAssertFalse(manager.systemChargeLimitConflict)
+    }
+
+    func testSystemChargeLimitConflict_clearsWhenLimitReached() {
+        // In conflict state (trying to charge but system blocks)
+        manager.evaluateState(makeBatteryState(percentage: 50, isCharging: true))
+        manager.evaluateState(makeBatteryState(
+            percentage: 50, isCharging: false, notChargingReason: 0x1000000))
+        XCTAssertTrue(manager.systemChargeLimitConflict)
+
+        // Battery somehow reaches our limit → paused → conflict clears
+        manager.evaluateState(makeBatteryState(
+            percentage: 80, isCharging: false, notChargingReason: 0x1000000))
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertFalse(manager.systemChargeLimitConflict)
     }
 }
 

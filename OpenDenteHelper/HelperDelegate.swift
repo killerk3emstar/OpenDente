@@ -43,7 +43,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             try smc.open()
             log.info("SMC connection opened")
         } catch {
-            log.error("Failed to open SMC: \(error.localizedDescription)")
+            log.error("Failed to open SMC: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -63,11 +63,16 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         hasMagSafeLED = smc.keyExists("ACLC")
         log.info("MagSafe LED (ACLC): \(self.hasMagSafeLED ? "available" : "not found", privacy: .public)")
 
-        // Diagnostic: log all charging-related key availability
+        // Diagnostic: log all charging-related key availability with current values
         let diagnosticKeys = ["CHTE", "CHIE", "CH0B", "CH0C", "CH0I", "CH0J", "ACLC"]
         for key in diagnosticKeys {
             if let info = smc.keyInfo(key) {
-                log.info("SMC key \(key, privacy: .public): type=\(info.type, privacy: .public) size=\(info.size)")
+                if let value = smc.readKeyOptional(key) {
+                    let hex = hexString(value.bytes)
+                    log.info("SMC key \(key, privacy: .public): type=\(info.type, privacy: .public) size=\(info.size, privacy: .public) value=[\(hex, privacy: .public)]")
+                } else {
+                    log.info("SMC key \(key, privacy: .public): type=\(info.type, privacy: .public) size=\(info.size, privacy: .public) value=<unreadable>")
+                }
             } else {
                 log.info("SMC key \(key, privacy: .public): not found")
             }
@@ -121,11 +126,11 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
     // MARK: - NSXPCListenerDelegate
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        log.info("shouldAcceptNewConnection from pid \(connection.processIdentifier)")
+        log.info("shouldAcceptNewConnection from pid \(connection.processIdentifier, privacy: .public)")
 
         // Verify the caller is our app
         guard verifyCaller(connection) else {
-            log.warning("REJECTED connection from pid \(connection.processIdentifier)")
+            log.warning("REJECTED connection from pid \(connection.processIdentifier, privacy: .public)")
             return false
         }
 
@@ -146,7 +151,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         hasActiveClient = true
         lock.unlock()
         watchdog.receivedHeartbeat()
-        log.info("ACCEPTED connection from pid \(connection.processIdentifier)")
+        log.info("ACCEPTED connection from pid \(connection.processIdentifier, privacy: .public)")
         return true
     }
 
@@ -158,7 +163,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         #if DEBUG
         // In debug builds, skip SecCode verification — Xcode debug signing
         // doesn't always pass identifier checks reliably.
-        log.debug("DEBUG: accepting connection from pid \(pid) without SecCode check")
+        log.debug("DEBUG: accepting connection from pid \(pid, privacy: .public) without SecCode check")
         return true
         #else
         // Production: code signature verification
@@ -166,7 +171,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         let attrs = [kSecGuestAttributePid: pid] as CFDictionary
         guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess,
               let secCode = code else {
-            log.error("Failed to get SecCode for pid \(pid)")
+            log.error("Failed to get SecCode for pid \(pid, privacy: .public)")
             return false
         }
 
@@ -181,7 +186,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
 
         let result = SecCodeCheckValidity(secCode, [], req)
         if result != errSecSuccess {
-            log.warning("Caller verification failed for pid \(pid): \(result)")
+            log.warning("Caller verification failed for pid \(pid, privacy: .public): \(result, privacy: .public)")
             return false
         }
         return true
@@ -233,7 +238,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             log.info("Charging enabled")
             reply(true, nil)
         } catch {
-            log.error("Failed to enable charging: \(error.localizedDescription)")
+            log.error("Failed to enable charging: \(error.localizedDescription, privacy: .public)")
             reply(false, error.localizedDescription)
         }
     }
@@ -265,7 +270,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             log.info("Charging inhibited")
             reply(true, nil)
         } catch {
-            log.error("Failed to inhibit charging: \(error.localizedDescription)")
+            log.error("Failed to inhibit charging: \(error.localizedDescription, privacy: .public)")
             reply(false, error.localizedDescription)
         }
     }
@@ -311,10 +316,10 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             // Charging keys are left as-is — ChargingManager's evaluateState
             // sends enableCharging() or inhibitCharging() immediately after,
             // avoiding a wasted enable→inhibit round-trip at the charge limit.
-            log.info("Force discharge: \(enable)")
+            log.info("Force discharge: \(enable, privacy: .public)")
             reply(true, nil)
         } catch {
-            log.error("Failed to set discharge: \(error.localizedDescription)")
+            log.error("Failed to set discharge: \(error.localizedDescription, privacy: .public)")
             reply(false, error.localizedDescription)
         }
     }
@@ -355,7 +360,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         self.sleepLEDColor = sleepLEDColor
         lock.unlock()
         let hex = String(sleepLEDColor, radix: 16, uppercase: true)
-        log.info("Sleep settings synced: stopChargingWhenSleeping=\(stopChargingWhenSleeping), sleepLED=0x\(hex, privacy: .public)")
+        log.info("Sleep settings synced: stopChargingWhenSleeping=\(stopChargingWhenSleeping, privacy: .public), sleepLED=0x\(hex, privacy: .public)")
         reply(true)
     }
 
@@ -374,7 +379,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             log.info("MagSafe LED set to 0x\(hex, privacy: .public)")
             reply(true, nil)
         } catch {
-            log.error("Failed to set MagSafe LED: \(error.localizedDescription)")
+            log.error("Failed to set MagSafe LED: \(error.localizedDescription, privacy: .public)")
             reply(false, error.localizedDescription)
         }
     }
@@ -393,7 +398,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         lock.unlock()
 
         guard sleepSetting && api != .unknown else {
-            log.info("Sleep callback: skipped (stopChargingWhenSleeping=\(sleepSetting), api=\(String(describing: api)))")
+            log.info("Sleep callback: skipped (stopChargingWhenSleeping=\(sleepSetting, privacy: .public), api=\(String(describing: api), privacy: .public))")
             return
         }
 
@@ -420,7 +425,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             HelperState.write(.inhibited)
             log.info("Sleep callback: inhibited charging (defense-in-depth)")
         } catch {
-            log.error("Sleep callback: failed to inhibit charging: \(error.localizedDescription)")
+            log.error("Sleep callback: failed to inhibit charging: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -468,7 +473,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             HelperState.clear()
             log.info("Reset to defaults (charging enabled, discharge off, LED default)")
         } catch {
-            log.error("Failed to reset to defaults: \(error.localizedDescription)")
+            log.error("Failed to reset to defaults: \(error.localizedDescription, privacy: .public)")
         }
     }
 }

@@ -46,6 +46,14 @@ struct BatteryState: Equatable {
     let adapterInfo: AdapterInfo?     // Rich charger info from IORegistry + SMC
     let batteryPower: Double?        // Watts - power to/from battery
     let notChargingReason: UInt64?   // IORegistry ChargerData.NotChargingReason (0 = normal)
+    let chargerInhibitReason: UInt64?  // IORegistry ChargerData.ChargerInhibitReason
+
+    /// True when macOS system Charge Limit is actively blocking charging.
+    /// NotChargingReason bit 24 (0x1000000) = system-level inhibit (separate from our CHTE gate).
+    /// Our CHTE inhibit sets bit 55 (0x80000000000000) instead — distinct signal.
+    var systemChargeLimitActive: Bool {
+        (notChargingReason ?? 0) & 0x1000000 != 0
+    }
 
     // MARK: - Time
     let timeToEmpty: Int?            // Minutes
@@ -99,7 +107,7 @@ struct BatteryState: Equatable {
         currentCapacity: nil, maxCapacity: nil, designCapacity: nil, cycleCount: nil,
         temperature: nil, voltage: nil, amperage: nil,
         systemPower: nil, adapterPower: nil, adapterInfo: nil,
-        batteryPower: nil, notChargingReason: nil,
+        batteryPower: nil, notChargingReason: nil, chargerInhibitReason: nil,
         timeToEmpty: nil, timeToFull: nil
     )
 }

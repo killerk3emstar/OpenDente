@@ -36,13 +36,13 @@ enum HelperInstaller {
             return false
         }
 
-        log.info("Helper status before register: \(String(describing: currentStatus))")
+        log.notice("Helper status before register: \(String(describing: currentStatus), privacy: .public)")
         do {
             try service.register()
-            log.info("Helper daemon registered successfully (status now: \(String(describing: service.status)))")
+            log.notice("Helper daemon registered successfully (status now: \(String(describing: service.status), privacy: .public))")
             return service.status == .enabled
         } catch {
-            log.error("Failed to register helper daemon: \(error)")
+            log.error("Failed to register helper daemon: \(error, privacy: .public)")
             return false
         }
     }
@@ -53,7 +53,7 @@ enum HelperInstaller {
             try service.unregister()
             log.info("Helper daemon unregistered")
         } catch {
-            log.error("Failed to unregister helper daemon: \(error.localizedDescription)")
+            log.error("Failed to unregister helper daemon: \(error.localizedDescription, privacy: .public)")
         }
     }
 

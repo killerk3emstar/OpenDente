@@ -32,10 +32,10 @@ final class SleepAssertionManager: SleepAssertionControl {
         )
         if result == kIOReturnSuccess {
             isPreventingSleep = true
-            log.info("Sleep assertion created: \(reason)")
+            log.notice("Sleep assertion created: \(reason, privacy: .public)")
             return true
         }
-        log.error("Failed to create sleep assertion: \(result)")
+        log.error("Failed to create sleep assertion: \(result, privacy: .public)")
         return false
     }
 
@@ -44,7 +44,7 @@ final class SleepAssertionManager: SleepAssertionControl {
         IOPMAssertionRelease(assertionID)
         assertionID = 0
         isPreventingSleep = false
-        log.info("Sleep assertion released")
+        log.notice("Sleep assertion released")
     }
 
     deinit {

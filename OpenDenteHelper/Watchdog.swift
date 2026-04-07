@@ -92,14 +92,14 @@ final class Watchdog: @unchecked Sendable {
         }
         self.timer = timer
         timer.resume()
-        log.info("Watchdog started (timeout: \(HelperConstants.watchdogTimeout)s)")
+        log.info("Watchdog started (timeout: \(HelperConstants.watchdogTimeout, privacy: .public)s)")
     }
 
     private func check() {
         let elapsed = Date().timeIntervalSince(lastHeartbeat)
 
         if elapsed > 60 {
-            log.info("Heartbeat gap: \(Int(elapsed))s since last heartbeat")
+            log.info("Heartbeat gap: \(Int(elapsed), privacy: .public)s since last heartbeat")
         }
 
         guard elapsed > HelperConstants.watchdogTimeout else { return }
@@ -108,7 +108,7 @@ final class Watchdog: @unchecked Sendable {
             return
         }
 
-        log.warning("Watchdog fired: no heartbeat for \(Int(elapsed))s, resetting charging")
+        log.warning("Watchdog fired: no heartbeat for \(Int(elapsed), privacy: .public)s, resetting charging")
         resetAction()
     }
 }

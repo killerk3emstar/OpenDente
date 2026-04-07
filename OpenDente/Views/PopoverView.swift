@@ -60,6 +60,12 @@ struct PopoverView: View {
                     .padding(.vertical, 6)
             }
 
+            if charging.systemChargeLimitConflict {
+                systemLimitWarning
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+            }
+
             Divider()
 
             detailsGrid
@@ -85,12 +91,16 @@ struct PopoverView: View {
                     .foregroundStyle(.primary)
 
                 HStack(spacing: 4) {
-                    Image(systemName: charging.mode.statusBarIcon)
+                    Image(systemName: charging.systemChargeLimitConflict
+                          ? "exclamationmark.triangle.fill"
+                          : charging.mode.statusBarIcon)
                         .font(.system(size: 10))
-                    Text(charging.mode.displayName)
+                    Text(charging.systemChargeLimitConflict
+                         ? "System Limit Active"
+                         : charging.mode.displayName)
                         .font(.system(size: 11))
                 }
-                .foregroundStyle(.secondary)
+                .foregroundStyle(charging.systemChargeLimitConflict ? .orange : .secondary)
             }
 
             Spacer()
@@ -384,6 +394,26 @@ struct PopoverView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
             }
+        }
+        .foregroundStyle(.orange)
+    }
+
+    // MARK: - System Limit Warning
+
+    private var systemLimitWarning: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+            Text("macOS Charge Limit is preventing charging")
+                .font(.system(size: 10))
+                .lineLimit(2)
+            Spacer()
+            Button("Open") {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Battery-Settings.extension")!)
+            }
+            .font(.system(size: 10))
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
         }
         .foregroundStyle(.orange)
     }
