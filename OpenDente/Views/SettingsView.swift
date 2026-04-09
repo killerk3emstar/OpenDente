@@ -25,7 +25,7 @@ struct SettingsView: View {
             BatteryInfoTab()
                 .tabItem { Label("Battery", systemImage: "battery.100percent") }
         }
-        .frame(width: 450, height: 400)
+        .frame(width: 500)
     }
 }
 
@@ -151,13 +151,13 @@ struct ChargingTab: View {
         Form {
             Section("Charge Limit") {
                 HStack {
+                    Text("Limit")
                     Slider(
                         value: Binding(
                             get: { Double(settings.chargeLimit) },
-                            set: { settings.chargeLimit = Int($0) }
+                            set: { settings.chargeLimit = Int(($0 / 5).rounded() * 5) }
                         ),
-                        in: 20...100,
-                        step: 5
+                        in: 20...100
                     )
                     Text("\(settings.chargeLimit)%")
                         .font(.system(.body, design: .monospaced))
@@ -174,10 +174,9 @@ struct ChargingTab: View {
                         Slider(
                             value: Binding(
                                 get: { Double(settings.sailingRange) },
-                                set: { settings.sailingRange = Int($0) }
+                                set: { settings.sailingRange = Int($0.rounded()) }
                             ),
-                            in: 2...25,
-                            step: 1
+                            in: 2...25
                         )
                         Text("\(settings.sailingRange)%")
                             .font(.system(.body, design: .monospaced))
@@ -198,10 +197,13 @@ struct ChargingTab: View {
                         Slider(
                             value: Binding(
                                 get: { TemperatureDisplay.toDisplay(settings.heatProtectionTemp) },
-                                set: { settings.heatProtectionTemp = TemperatureDisplay.toCelsius($0) }
+                                set: {
+                                    let step = TemperatureDisplay.sliderStep
+                                    let snapped = ($0 / step).rounded() * step
+                                    settings.heatProtectionTemp = TemperatureDisplay.toCelsius(snapped)
+                                }
                             ),
-                            in: TemperatureDisplay.sliderRange,
-                            step: TemperatureDisplay.sliderStep
+                            in: TemperatureDisplay.sliderRange
                         )
                         Text(TemperatureDisplay.format(settings.heatProtectionTemp, fractionDigits: 0))
                             .font(.system(.body, design: .monospaced))
@@ -217,21 +219,21 @@ struct ChargingTab: View {
                     Toggle("Turn off LED when not charging", isOn: $settings.magSafeLEDOffWhenInactive)
                         .padding(.leading, 16)
                     Text("Off when limit reached/sailing, orange when charging. Otherwise green/orange.")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.leading, 16)
                 } else {
                     Text("Orange when charging, green when limit reached. Requires MagSafe.")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Toggle("Stop Charging when Sleeping", isOn: $settings.stopChargingWhenSleeping)
                 Text("Inhibits charging before sleep so the battery stays at its current level.")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("Disable Sleep until Charge Limit", isOn: $settings.disableSleepUntilChargeLimit)
                 Text("Keeps Mac awake while charging or discharging toward the limit.")
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("Use Hardware Battery Percentage", isOn: $settings.useHardwareBatteryPercentage)
             }
@@ -254,10 +256,6 @@ struct StatusBarTab: View {
                 Toggle("Temperature", isOn: $settings.statusBarShowTemperature)
                 Toggle("Power Usage", isOn: $settings.statusBarShowPower)
                 Toggle("Charging Mode Icon", isOn: $settings.statusBarShowMode)
-            }
-
-            Section("Popover") {
-                Toggle("Show Power Flow", isOn: $settings.showPowerFlow)
             }
 
             Section {
@@ -320,6 +318,10 @@ struct PopoverItemsTab: View {
                 .padding(.bottom, 6)
 
             List {
+                Section {
+                    Toggle("Show Power Flow", isOn: $settings.showPowerFlow)
+                }
+
                 Section("Visible") {
                     ForEach(enabledItems) { item in
                         PopoverItemRow(item: item, isEnabled: true) {

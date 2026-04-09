@@ -5,6 +5,7 @@ struct PopoverView: View {
     @ObservedObject var battery = BatteryService.shared
     @ObservedObject var charging = ChargingManager.shared
     @ObservedObject var settings = AppSettings.shared
+    @Environment(\.openSettings) private var openSettingsAction
 
     private var displayPercentage: Int {
         battery.batteryState.effectivePercentage(useHardware: settings.useHardwareBatteryPercentage)
@@ -345,10 +346,9 @@ struct PopoverView: View {
                 Slider(
                     value: Binding(
                         get: { Double(settings.chargeLimit) },
-                        set: { settings.chargeLimit = Int($0) }
+                        set: { settings.chargeLimit = Int(($0 / 5).rounded() * 5) }
                     ),
-                    in: 20...100,
-                    step: 5
+                    in: 20...100
                 )
                 .controlSize(.small)
             }
@@ -421,6 +421,7 @@ struct PopoverView: View {
     // MARK: - Actions
 
     private func openSettings() {
-        AppDelegate.instance?.openSettingsWindow()
+        openSettingsAction()
+        NSApp.activate()
     }
 }

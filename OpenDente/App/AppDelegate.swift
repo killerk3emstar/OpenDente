@@ -6,11 +6,8 @@ import ServiceManagement
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
-    static private(set) var instance: AppDelegate?
-
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
-    private var settingsWindow: NSWindow?
     private var eventMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
     private var lastIconName: String?
@@ -29,7 +26,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        AppDelegate.instance = self
         NSApp.setActivationPolicy(.accessory)
 
         guard !Self.isRunningTests else { return }
@@ -169,31 +165,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
-    }
-
-    // MARK: - Settings Window
-
-    func openSettingsWindow() {
-        if let window = settingsWindow {
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        let settingsView = SettingsView()
-            .padding(.top, 8)
-        let hostingController = NSHostingController(rootView: settingsView)
-
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "OpenDente Settings"
-        window.styleMask = [.titled, .closable]
-        window.center()
-        window.setFrameAutosaveName("OpenDenteSettings")
-        window.isReleasedWhenClosed = false
-        window.makeKeyAndOrderFront(nil)
-
-        NSApp.activate(ignoringOtherApps: true)
-        self.settingsWindow = window
     }
 
     // MARK: - Event Monitor
