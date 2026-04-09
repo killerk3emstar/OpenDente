@@ -44,6 +44,16 @@ struct GeneralTab: View {
                     }
             }
 
+            Section {
+                LabeledContent("Version") {
+                    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+                    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+                    Text("\(version) (\(build))")
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+
             Section("Privileged Helper") {
                 LabeledContent("Status") {
                     Text(HelperInstaller.statusDescription)

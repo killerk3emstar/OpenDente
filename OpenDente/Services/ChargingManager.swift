@@ -29,7 +29,7 @@ final class ChargingManager: ObservableObject {
 
     static let shared = ChargingManager()
 
-    @Published internal(set) var mode: ChargingMode = .idle {
+    @Published var mode: ChargingMode = .idle {
         didSet {
             if mode != oldValue {
                 log.notice("Mode: \(oldValue.displayName, privacy: .public) → \(self.mode.displayName, privacy: .public)")
@@ -39,7 +39,7 @@ final class ChargingManager: ObservableObject {
             }
         }
     }
-    @Published internal(set) var chargingAPI: SMCChargingAPI = .unknown
+    @Published var chargingAPI: SMCChargingAPI = .unknown
     @Published var isHelperInstalled = false
     @Published private(set) var isPreventingSleep = false
 
@@ -61,7 +61,7 @@ final class ChargingManager: ObservableObject {
 
     /// Last LED color sent to avoid duplicate XPC calls.
     /// Internal setter for testability (simulating helper reconnect).
-    internal(set) var lastLEDColor: UInt8?
+    var lastLEDColor: UInt8?
 
     /// Timestamp of last inhibit send — used to debounce verification re-sends.
     /// Internal for testability.
@@ -233,7 +233,7 @@ final class ChargingManager: ObservableObject {
         if sysctlbyname("hw.model", nil, &size, nil, 0) == 0 {
             var buf = [CChar](repeating: 0, count: size)
             if sysctlbyname("hw.model", &buf, &size, nil, 0) == 0 {
-                model = String(cString: buf)
+                model = String(decoding: buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
             }
         }
 

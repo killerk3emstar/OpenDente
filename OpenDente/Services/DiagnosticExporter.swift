@@ -52,7 +52,7 @@ enum DiagnosticExporter {
         if sysctlbyname("hw.model", nil, &size, nil, 0) == 0 {
             var buf = [CChar](repeating: 0, count: size)
             if sysctlbyname("hw.model", &buf, &size, nil, 0) == 0 {
-                model = String(cString: buf)
+                model = String(decoding: buf.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }, as: UTF8.self)
             }
         }
 
@@ -181,6 +181,7 @@ enum DiagnosticExporter {
         case .notice:      return "notice"
         case .error:       return "error"
         case .fault:       return "fault"
+        case .undefined:   return "undefined"
         @unknown default:  return "unknown"
         }
     }

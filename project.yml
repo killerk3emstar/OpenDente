@@ -13,6 +13,8 @@ settings:
     MACOSX_DEPLOYMENT_TARGET: "14.0"
     SWIFT_STRICT_CONCURRENCY: minimal
     SWIFT_UPCOMING_FEATURE_GLOBAL_ACTOR_ISOLATED_TYPES_USABILITY: false
+    DEAD_CODE_STRIPPING: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
 
 targets:
   OpenDente:
@@ -42,20 +44,19 @@ targets:
     dependencies:
       - target: OpenDenteHelper
     postBuildScripts:
-      - name: "Stamp Git Version"
+      - name: "Bundle Helper & Stamp Version"
         script: |
+          # Stamp build number with git commit hash
           PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
           GIT_HASH=$(git -C "${SRCROOT}" rev-parse --short HEAD)
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GIT_HASH}" "${PLIST}"
-        basedOnDependencyAnalysis: false
-      - name: "Copy Helper Tool"
-        script: |
+
+          # Copy helper tool into app bundle
           HELPER_TOOLS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/HelperTools"
           mkdir -p "${HELPER_TOOLS_DIR}"
           cp "${BUILT_PRODUCTS_DIR}/com.opendente.helper" "${HELPER_TOOLS_DIR}/com.opendente.helper"
-        basedOnDependencyAnalysis: false
-      - name: "Copy Helper LaunchDaemon Plist"
-        script: |
+
+          # Copy helper LaunchDaemon plist into app bundle
           LAUNCH_DAEMONS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/LaunchDaemons"
           mkdir -p "${LAUNCH_DAEMONS_DIR}"
           cp "${SRCROOT}/OpenDenteHelper/com.opendente.helper.plist" "${LAUNCH_DAEMONS_DIR}/com.opendente.helper.plist"
