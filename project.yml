@@ -42,6 +42,12 @@ targets:
     dependencies:
       - target: OpenDenteHelper
     postBuildScripts:
+      - name: "Stamp Git Version"
+        script: |
+          PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+          GIT_HASH=$(git -C "${SRCROOT}" rev-parse --short HEAD)
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GIT_HASH}" "${PLIST}"
+        basedOnDependencyAnalysis: false
       - name: "Copy Helper Tool"
         script: |
           HELPER_TOOLS_DIR="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Library/HelperTools"
