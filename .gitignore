@@ -21,6 +21,13 @@ build/
 .AppleDouble
 .LSOverride
 
+# Swift Package Manager
+.swiftpm/
+.build/
+
+# Claude Code local state
+.claude/
+
 # PDF reference docs
 *.pdf
 
