@@ -208,6 +208,7 @@ final class ChargingManager: ObservableObject {
 
     /// Detect which SMC keys this Mac supports for charging control (read-only, no root needed)
     private func detectChargingAPI() {
+        try? smc.open()
         // Try Tahoe keys first (newer)
         if smc.keyExists("CHTE") {
             chargingAPI = .tahoe
@@ -216,7 +217,7 @@ final class ChargingManager: ObservableObject {
             chargingAPI = .legacy
             log.notice("Detected legacy charging API (CH0B/CH0C)")
         } else {
-            chargingAPI = .unknown
+            chargingAPI = .legacy
             log.notice("No charging control keys detected")
         }
 
@@ -294,7 +295,7 @@ final class ChargingManager: ObservableObject {
         // Not plugged in = on battery, nothing to control.
         // Exception: during force discharge, IOKit reports power source as "battery"
         // even though the charger is physically connected. Don't kill our own discharge.
-        guard state.isPluggedIn || mode == .discharging else {
+        guard state.isPluggedIn || mode == .discharging || mode == .paused || mode == .sailing || pct < settings.chargeLimit else {
             if mode == .topUp {
                 log.info("Top Up ended: unplugged at \(state.percentage, privacy: .public)%")
             }

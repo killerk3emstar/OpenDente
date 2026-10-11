@@ -31,3 +31,7 @@ build/
 # PDF reference docs
 *.pdf
 
+
+# Local engineering docs and backups
+docs/
+*.backup
