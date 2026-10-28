@@ -90,6 +90,14 @@ final class ChargingManager: ObservableObject {
     /// regardless of which evaluateState code path ran.
     private(set) var lastIsCharging: Bool = false
 
+    /// Adapter mode (macOS 27) has cut wall power. IOKit then reports "on battery"
+    /// even though the charger is still plugged in.
+    private var wallPowerDisabled = false
+
+    /// When wall power was just restored, IOKit can lag. Ignore a false unplug
+    /// reading until this deadline so a charge cycle is not cancelled.
+    private var wallPowerRestoreAt: Date?
+
     private convenience init() {
         self.init(settings: .shared, helper: HelperClient.shared, battery: .shared,
                   sleepAssertion: SleepAssertionManager())
@@ -154,6 +162,11 @@ final class ChargingManager: ObservableObject {
                 log.info("Helper restarted/reconnected — resyncing state")
                 self?.syncWithHelper()
             }
+            client.onReconnectFailed = { [weak self] in
+                guard let self else { return }
+                self.isHelperInstalled = false
+                log.error("Helper is not running. Open OpenDente and choose Install Helper.")
+            }
 
             syncWithHelper()
         }
@@ -166,9 +179,10 @@ final class ChargingManager: ObservableObject {
         client.getChargingAPI { [weak self] api in
             Task { @MainActor in
                 switch api {
-                case "legacy": self?.chargingAPI = .legacy
-                case "tahoe":  self?.chargingAPI = .tahoe
-                default:       break
+                case "legacy":  self?.chargingAPI = .legacy
+                case "tahoe":   self?.chargingAPI = .tahoe
+                case "adapter": self?.chargingAPI = .adapter
+                default:        break
                 }
             }
         }
@@ -215,6 +229,9 @@ final class ChargingManager: ObservableObject {
         } else if smc.keyExists("CH0B") {
             chargingAPI = .legacy
             log.notice("Detected legacy charging API (CH0B/CH0C)")
+        } else if smc.keyExists("CHIE") {
+            chargingAPI = .adapter
+            log.notice("Detected adapter charging control (CHIE only). macOS 27 has no charge-inhibit key.")
         } else {
             chargingAPI = .unknown
             log.notice("No charging control keys detected")
@@ -260,6 +277,7 @@ final class ChargingManager: ObservableObject {
         switch chargingAPI {
         case .tahoe: apiName = "tahoe"
         case .legacy: apiName = "legacy"
+        case .adapter: apiName = "adapter"
         case .unknown: apiName = "unknown"
         }
 
@@ -294,7 +312,9 @@ final class ChargingManager: ObservableObject {
         // Not plugged in = on battery, nothing to control.
         // Exception: during force discharge, IOKit reports power source as "battery"
         // even though the charger is physically connected. Don't kill our own discharge.
-        guard state.isPluggedIn || mode == .discharging else {
+        // Adapter mode has the same lie while wall power is cut, and for a few
+        // seconds after it is restored.
+        guard state.isPluggedIn || mode == .discharging || adapterIgnoresUnplugReading else {
             if mode == .topUp {
                 log.info("Top Up ended: unplugged at \(state.percentage, privacy: .public)%")
             }
@@ -302,6 +322,9 @@ final class ChargingManager: ObservableObject {
             firstInhibitTime = nil
             lastInhibitTime = nil
             inhibitRetryCount = 0
+            if wallPowerDisabled {
+                enableCharging(expectACReturn: false)
+            }
             mode = .onBattery
             return
         }
@@ -350,7 +373,7 @@ final class ChargingManager: ObservableObject {
         if mode == .discharging {
             // Real unplug detection: during force discharge, IOKit reports isPluggedIn=false.
             // A real unplug is when isPluggedIn=false AND adapter power is gone.
-            if !state.isPluggedIn && (state.adapterPower ?? 0) < 0.1 {
+            if !state.isPluggedIn && (state.adapterPower ?? 0) < 0.1 && !wallPowerDisabled {
                 log.info("Discharge ended: charger unplugged at \(pct, privacy: .public)%")
                 forceDischarge(false)
                 mode = .onBattery
@@ -374,8 +397,15 @@ final class ChargingManager: ObservableObject {
         // Sailing is entered from .paused/.heatProtection (dropping from above)
         // or from .onBattery/.idle (plug-in/app start within range).
         // NEVER from .charging — that would cut off a charge cycle before reaching the limit.
-        if settings.sailingModeEnabled {
-            let lowerBound = settings.sailingLowerBound
+        //
+        // Adapter mode cuts wall power instead of pausing the charger, so a 1%
+        // band would renegotiate USB-C on every crossing. Use sailing's range
+        // when it is on, otherwise a fixed 5% band.
+        let useHysteresis = settings.sailingModeEnabled || chargingAPI == .adapter
+        if useHysteresis {
+            let lowerBound = settings.sailingModeEnabled
+                ? settings.sailingLowerBound
+                : max(0, limit - 5)
 
             if pct >= limit {
                 if mode != .paused {
@@ -388,12 +418,18 @@ final class ChargingManager: ObservableObject {
             } else if pct >= lowerBound {
                 if mode == .charging {
                     // Keep charging toward limit — don't interrupt
-                } else if mode != .sailing {
-                    log.notice("Sailing: \(pct, privacy: .public)% in range \(lowerBound, privacy: .public)–\(limit, privacy: .public)%")
-                    if mode != .paused && mode != .heatProtection {
-                        inhibitCharging()
+                } else if settings.sailingModeEnabled {
+                    if mode != .sailing {
+                        log.notice("Sailing: \(pct, privacy: .public)% in range \(lowerBound, privacy: .public)–\(limit, privacy: .public)%")
+                        if mode != .paused && mode != .heatProtection {
+                            inhibitCharging()
+                        }
+                        mode = .sailing
                     }
-                    mode = .sailing
+                } else if mode != .paused && mode != .heatProtection {
+                    log.notice("Adapter hold: \(pct, privacy: .public)% in range \(lowerBound, privacy: .public)–\(limit, privacy: .public)%")
+                    inhibitCharging()
+                    mode = .paused
                 }
             } else {
                 if mode != .charging {
@@ -494,6 +530,16 @@ final class ChargingManager: ObservableObject {
         if mode == .discharging {
             forceDischarge(false)
             log.info("Will sleep: stopped discharge")
+        }
+
+        if chargingAPI == .adapter {
+            // Sleeping with wall power cut drains the battery with nobody awake
+            // to restore it at the lower bound. Charge may rise while asleep.
+            if wallPowerDisabled || (mode != .onBattery && mode != .idle) {
+                enableCharging()
+                log.notice("Will sleep: restored wall power; macOS 27 cannot hold the limit while asleep")
+            }
+            return
         }
 
         guard settings.stopChargingWhenSleeping else {
@@ -700,6 +746,24 @@ final class ChargingManager: ObservableObject {
         return "unknown"
     }
 
+    /// True while this Mac is in adapter mode and IOKit's "unplugged" reading
+    /// is caused by us, or is the lag after we restored wall power.
+    private var adapterIgnoresUnplugReading: Bool {
+        guard chargingAPI == .adapter else { return false }
+        if wallPowerDisabled { return true }
+        if let restored = wallPowerRestoreAt, Date().timeIntervalSince(restored) < 20 {
+            return true
+        }
+        return false
+    }
+
+    /// Lower edge of the hold band. Exposed for the popover explanation.
+    var limitLowerBound: Int {
+        if settings.sailingModeEnabled { return settings.sailingLowerBound }
+        if chargingAPI == .adapter { return max(0, settings.chargeLimit - 5) }
+        return settings.chargeLimit
+    }
+
     // MARK: - SMC Charging Control (via Helper)
 
     /// Disable charging (battery stops receiving charge, Mac runs from adapter)
@@ -712,6 +776,10 @@ final class ChargingManager: ObservableObject {
 
         lastInhibitTime = Date()
         if firstInhibitTime == nil { firstInhibitTime = lastInhibitTime }
+        if chargingAPI == .adapter {
+            wallPowerDisabled = true
+            wallPowerRestoreAt = nil
+        }
         helper.inhibitCharging { [weak self] success, error in
             if success {
                 log.info("SMC: inhibit written — waiting for IOKit confirmation")
@@ -723,7 +791,7 @@ final class ChargingManager: ObservableObject {
     }
 
     /// Enable charging (allow battery to charge)
-    private func enableCharging() {
+    private func enableCharging(expectACReturn: Bool = true) {
         guard isHelperInstalled else { return }
         guard chargingAPI != .unknown else {
             log.warning("Cannot enable charging: no API detected")
@@ -735,6 +803,10 @@ final class ChargingManager: ObservableObject {
         lastInhibitTime = nil
         inhibitRetryCount = 0
         didNotifyInhibitExhausted = false
+        if chargingAPI == .adapter {
+            wallPowerDisabled = false
+            wallPowerRestoreAt = expectACReturn ? Date() : nil
+        }
 
         helper.enableCharging { [weak self] success, error in
             if success {
@@ -754,6 +826,10 @@ final class ChargingManager: ObservableObject {
             return
         }
 
+        if chargingAPI == .adapter {
+            wallPowerDisabled = enable
+            wallPowerRestoreAt = enable ? nil : Date()
+        }
         helper.forceDischarge(enable: enable) { [weak self] success, error in
             if success {
                 log.info("Force discharge: \(enable, privacy: .public)")
@@ -858,6 +934,8 @@ final class ChargingManager: ObservableObject {
             helper.setMagSafeLED(color: HelperConstants.ledAuto, completion: nil)
         }
         lastLEDColor = nil
+        wallPowerDisabled = false
+        wallPowerRestoreAt = nil
         sleepAssertion.allowSleep()
         isPreventingSleep = false
         mode = .idle
@@ -867,6 +945,8 @@ final class ChargingManager: ObservableObject {
     func resetToDefaultsSync() {
         log.notice("App terminating — resetting SMC to defaults")
         helper.resetToDefaultsSync(timeout: 2.0)
+        wallPowerDisabled = false
+        wallPowerRestoreAt = nil
         sleepAssertion.allowSleep()
         isPreventingSleep = false
         mode = .idle

@@ -14,6 +14,7 @@ final class HelperClient: @unchecked Sendable {
     private var heartbeatTimer: Timer?
     private let lock = NSLock()
     private var isIntentionalDisconnect = false
+    private var isReconnecting = false
     private var reconnectAttempts = 0
     private static let maxReconnectAttempts = 5
     private static let reconnectDelays: [TimeInterval] = [1, 2, 5, 10, 30]
@@ -21,6 +22,10 @@ final class HelperClient: @unchecked Sendable {
     /// Called when the helper process restarts (after crash/interruption) or after
     /// successful reconnection. ChargingManager uses this to resync charging state.
     var onHelperRestarted: (() -> Void)?
+
+    /// Called when reconnect gives up. The helper job can be missing even when
+    /// SMAppService still reports it as enabled.
+    var onReconnectFailed: (() -> Void)?
 
     // MARK: - Connection
 
@@ -33,7 +38,10 @@ final class HelperClient: @unchecked Sendable {
         let existing = connection
         connection = nil
         isIntentionalDisconnect = false
-        reconnectAttempts = 0
+        // Retries call connect() too. Resetting here made every attempt look like the first.
+        if !isReconnecting {
+            reconnectAttempts = 0
+        }
         lock.unlock()
         if existing != nil {
             stopHeartbeat()
@@ -103,6 +111,7 @@ final class HelperClient: @unchecked Sendable {
     private func scheduleReconnect() {
         guard reconnectAttempts < Self.maxReconnectAttempts else {
             log.notice("XPC reconnect failed after \(Self.maxReconnectAttempts, privacy: .public) attempts — helper may need reinstallation")
+            onReconnectFailed?()
             return
         }
 
@@ -120,7 +129,9 @@ final class HelperClient: @unchecked Sendable {
             guard needsReconnect else { return }
 
             log.info("XPC reconnect: attempting...")
+            self.isReconnecting = true
             self.connect()
+            self.isReconnecting = false
             self.onHelperRestarted?()
         }
     }

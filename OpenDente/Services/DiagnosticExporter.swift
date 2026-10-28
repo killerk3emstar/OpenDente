@@ -102,6 +102,7 @@ enum DiagnosticExporter {
         switch charging.chargingAPI {
         case .tahoe: apiName = "Tahoe (CHTE/CHIE)"
         case .legacy: apiName = "Legacy (CH0B/CH0C)"
+        case .adapter: apiName = "macOS 27 (CHIE adapter)"
         case .unknown: apiName = "Not detected"
         }
         r += "Charging API: \(apiName)\n"

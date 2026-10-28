@@ -338,6 +338,9 @@ extension Comparable {
 /// Which generation of SMC charging keys to use
 enum SMCChargingAPI {
     case legacy     // CH0B/CH0C/CH0I (M1/M2/M3)
-    case tahoe      // CHTE/CHIE (newer Macs)
+    case tahoe      // CHTE/CHIE (M1–M4 through macOS 26.6)
+    /// macOS 27 firmware removed CHTE. CHIE still cuts wall power, so the
+    /// limit is held by running on battery and charging back up in a band.
+    case adapter
     case unknown    // Not yet detected
 }

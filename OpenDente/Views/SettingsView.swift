@@ -173,6 +173,11 @@ struct ChargingTab: View {
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 45, alignment: .trailing)
                 }
+                if charging.chargingAPI == .adapter {
+                    Text("On this Mac the charger cannot be paused. OpenDente runs on battery from \(settings.chargeLimit)% down to \(charging.limitLowerBound)%, then charges back. Sleep does not hold the limit.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("Sailing Mode") {
@@ -545,6 +550,7 @@ struct BatteryInfoTab: View {
         switch charging.chargingAPI {
         case .legacy: return "Legacy (CH0B/CH0C)"
         case .tahoe:  return "Tahoe (CHTE/CHIE)"
+        case .adapter: return "macOS 27 (runs on battery to hold the limit)"
         case .unknown: return "Not detected"
         }
     }

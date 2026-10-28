@@ -54,6 +54,10 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         } else if smc.keyExists("CH0B") {
             chargingAPI = .legacy
             log.info("Detected legacy charging API (CH0B/CH0C)")
+        } else if smc.keyExists("CHIE") {
+            // macOS 27 removed the charge-inhibit key. CHIE still cuts wall power.
+            chargingAPI = .adapter
+            log.info("Detected adapter charging control (CHIE only, no CHTE)")
         } else {
             chargingAPI = .unknown
             log.info("No charging control keys detected")
@@ -117,6 +121,20 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 }
             } else {
                 log.warning("CHTE readback failed: key not readable")
+            }
+        case .adapter:
+            if let val = smc.readKeyOptional("CHIE") {
+                let allHex = hexString(val.bytes)
+                let byte = val.uint8Value ?? 0xFF
+                let ok = inhibited ? (byte == 0x08) : (byte == 0x00)
+                if ok {
+                    log.info("CHIE readback OK: [\(allHex, privacy: .public)]")
+                } else {
+                    let expected = inhibited ? "08" : "00"
+                    log.error("CHIE readback MISMATCH: [\(allHex, privacy: .public)], expected [\(expected, privacy: .public)]")
+                }
+            } else {
+                log.warning("CHIE readback failed: key not readable")
             }
         case .unknown:
             break
@@ -230,6 +248,9 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             case .tahoe:
                 log.info("Writing CHTE: [00 00 00 00]")
                 try smc.writeKey("CHTE", bytes: [0x00, 0x00, 0x00, 0x00])
+            case .adapter:
+                log.info("Writing CHIE: [00] (restore wall power)")
+                try smc.writeKey("CHIE", bytes: [0x00])
             case .unknown:
                 break
             }
@@ -261,6 +282,9 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             case .tahoe:
                 log.info("Writing CHTE: [01 00 00 00]")
                 try smc.writeKey("CHTE", bytes: [0x01, 0x00, 0x00, 0x00])
+            case .adapter:
+                log.info("Writing CHIE: [08] (cut wall power)")
+                try smc.writeKey("CHIE", bytes: [0x08])
             case .unknown:
                 break
             }
@@ -290,7 +314,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 let byte: UInt8 = enable ? 0x01 : 0x00
                 log.info("Writing CH0I: [\(self.hexString([byte]), privacy: .public)]")
                 try smc.writeKey("CH0I", bytes: [byte])
-            case .tahoe:
+            case .tahoe, .adapter:
                 let byte: UInt8 = enable ? 0x08 : 0x00
                 log.info("Writing CHIE: [\(self.hexString([byte]), privacy: .public)]")
                 try smc.writeKey("CHIE", bytes: [byte])
@@ -307,6 +331,8 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 case .tahoe:
                     log.info("Writing CHTE: [01 00 00 00] (discharge + inhibit)")
                     try smc.writeKey("CHTE", bytes: [0x01, 0x00, 0x00, 0x00])
+                case .adapter:
+                    break // CHIE already holds the discharge state
                 case .unknown:
                     break
                 }
@@ -350,6 +376,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         switch chargingAPI {
         case .legacy:  reply("legacy")
         case .tahoe:   reply("tahoe")
+        case .adapter: reply("adapter")
         case .unknown: reply("unknown")
         }
     }
@@ -397,6 +424,20 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         let hasLED = hasMagSafeLED
         lock.unlock()
 
+        if api == .adapter {
+            // Cutting wall power across sleep would drain the battery with no lower bound.
+            lock.lock()
+            defer { lock.unlock() }
+            do {
+                try smc.writeKey("CHIE", bytes: [0x00])
+                HelperState.write(.normal)
+                log.info("Sleep callback: restored wall power (adapter mode cannot hold the limit while asleep)")
+            } catch {
+                log.error("Sleep callback: failed to restore wall power: \(error.localizedDescription, privacy: .public)")
+            }
+            return
+        }
+
         guard sleepSetting && api != .unknown else {
             log.info("Sleep callback: skipped (stopChargingWhenSleeping=\(sleepSetting, privacy: .public), api=\(String(describing: api), privacy: .public))")
             return
@@ -412,6 +453,8 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 try smc.writeKey("CH0C", bytes: [0x02])
             case .tahoe:
                 try smc.writeKey("CHTE", bytes: [0x01, 0x00, 0x00, 0x00])
+            case .adapter:
+                break
             case .unknown:
                 break
             }
@@ -448,7 +491,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             switch chargingAPI {
             case .legacy:
                 try smc.writeKey("CH0I", bytes: [0x00])
-            case .tahoe:
+            case .tahoe, .adapter:
                 try smc.writeKey("CHIE", bytes: [0x00])
             case .unknown:
                 break
@@ -461,6 +504,8 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 try smc.writeKey("CH0C", bytes: [0x00])
             case .tahoe:
                 try smc.writeKey("CHTE", bytes: [0x00, 0x00, 0x00, 0x00])
+            case .adapter:
+                break // CHIE clear above is the whole reset
             case .unknown:
                 break
             }

@@ -905,6 +905,74 @@ final class ChargingManagerTests: XCTestCase {
         XCTAssertEqual(mock.calls, [.inhibitCharging])
     }
 
+    // =========================================================================
+    // MARK: - macOS 27 adapter mode
+    // =========================================================================
+    // No CHTE inhibit key. Holding the limit cuts wall power (same call as
+    // inhibitCharging) and restores it only after a 5% drop, so USB-C does
+    // not renegotiate on every percent.
+
+    func testAdapter_aboveLimit_cutsPower() {
+        manager.chargingAPI = .adapter
+        settings.chargeLimit = 60
+
+        manager.evaluateState(makeBatteryState(percentage: 87, isCharging: true))
+
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertEqual(mock.calls, [.inhibitCharging])
+    }
+
+    func testAdapter_ioKitUnplugReading_doesNotReleaseTheHold() {
+        manager.chargingAPI = .adapter
+        settings.chargeLimit = 60
+        manager.evaluateState(makeBatteryState(percentage: 87, isCharging: true))
+        mock.clearCalls()
+
+        // CHIE makes IOKit report battery power and zero adapter watts.
+        manager.evaluateState(makeBatteryState(percentage: 80, isCharging: false, isPluggedIn: false, adapterPower: 0))
+
+        XCTAssertEqual(manager.mode, .paused)
+        XCTAssertTrue(mock.calls.isEmpty, "A hold must survive the unplugged reading it caused")
+    }
+
+    func testAdapter_belowBand_restoresPower() {
+        manager.chargingAPI = .adapter
+        settings.chargeLimit = 60
+        manager.evaluateState(makeBatteryState(percentage: 87))
+        mock.clearCalls()
+
+        manager.evaluateState(makeBatteryState(percentage: 54, isPluggedIn: false, adapterPower: 0))
+
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertEqual(mock.calls, [.enableCharging])
+    }
+
+    func testAdapter_insideBandWhileCharging_doesNotCutEarly() {
+        manager.chargingAPI = .adapter
+        settings.chargeLimit = 60
+        manager.evaluateState(makeBatteryState(percentage: 40, isCharging: true))
+        XCTAssertEqual(manager.mode, .charging)
+        mock.clearCalls()
+
+        manager.evaluateState(makeBatteryState(percentage: 57, isCharging: true))
+
+        XCTAssertEqual(manager.mode, .charging)
+        XCTAssertTrue(mock.calls.isEmpty)
+    }
+
+    func testAdapter_willSleep_restoresWallPower() {
+        manager.chargingAPI = .adapter
+        settings.chargeLimit = 60
+        settings.stopChargingWhenSleeping = true
+        manager.evaluateState(makeBatteryState(percentage: 90))
+        mock.clearCalls()
+
+        manager.handleWillSleep()
+
+        XCTAssertEqual(mock.calls, [.enableCharging])
+        XCTAssertEqual(manager.modeBeforeSleep, .paused)
+    }
+
     func testLimitRaised_aboveCurrentPercentage_charges() {
         manager.evaluateState(makeBatteryState(percentage: 80))
         XCTAssertEqual(manager.mode, .paused)

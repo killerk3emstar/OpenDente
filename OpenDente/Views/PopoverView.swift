@@ -12,7 +12,42 @@ struct PopoverView: View {
     }
 
     private var adapterVisible: Bool {
-        Self.adapterVisible(isPluggedIn: battery.batteryState.isPluggedIn, mode: charging.mode)
+        if Self.adapterVisible(isPluggedIn: battery.batteryState.isPluggedIn, mode: charging.mode) {
+            return true
+        }
+        // Adapter mode reports "on battery" while we cut wall power.
+        guard charging.chargingAPI == .adapter else { return false }
+        switch charging.mode {
+        case .paused, .sailing, .heatProtection, .topUp, .charging, .discharging:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var canTopUp: Bool {
+        guard charging.isHelperInstalled, charging.chargingAPI != .unknown else { return false }
+        if battery.batteryState.isPluggedIn { return true }
+        guard charging.chargingAPI == .adapter else { return false }
+        switch charging.mode {
+        case .paused, .sailing, .heatProtection, .discharging:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var statusLine: String {
+        if charging.systemChargeLimitConflict { return "System Limit Active" }
+        if charging.chargingAPI == .adapter {
+            switch charging.mode {
+            case .paused, .sailing:
+                return "On battery, holding \(settings.chargeLimit)%"
+            default:
+                break
+            }
+        }
+        return charging.mode.displayName
     }
 
     /// Adapter details show when charger is connected — including during force discharge
@@ -96,12 +131,17 @@ struct PopoverView: View {
                           ? "exclamationmark.triangle.fill"
                           : charging.mode.statusBarIcon)
                         .font(.system(size: 10))
-                    Text(charging.systemChargeLimitConflict
-                         ? "System Limit Active"
-                         : charging.mode.displayName)
+                    Text(statusLine)
                         .font(.system(size: 11))
                 }
                 .foregroundStyle(charging.systemChargeLimitConflict ? .orange : .secondary)
+
+                if charging.chargingAPI == .adapter {
+                    Text("Holds \(charging.limitLowerBound)–\(settings.chargeLimit)% by running on battery. Not held during sleep.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer()
@@ -131,7 +171,7 @@ struct PopoverView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(!battery.batteryState.isPluggedIn || !charging.isHelperInstalled || charging.chargingAPI == .unknown)
+                .disabled(!canTopUp)
                 .help("Top Up to 100%")
 
                 Button(action: { charging.startDischarge() }) {
@@ -388,7 +428,9 @@ struct PopoverView: View {
                 .controlSize(.mini)
             } else {
                 Button("Install") {
-                    openSettings()
+                    if HelperInstaller.register() {
+                        charging.connectToHelper()
+                    }
                 }
                 .font(.system(size: 10))
                 .buttonStyle(.bordered)
