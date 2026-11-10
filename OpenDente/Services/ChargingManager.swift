@@ -6,6 +6,7 @@ private let log = Logger(subsystem: "com.opendente.app", category: "Charging")
 
 /// Protocol for SMC charging control operations. Enables testing without real hardware.
 protocol ChargingControl: Sendable {
+    func setNativeChargeLimit(_ limit: Int, completion: (@Sendable (Bool, String?) -> Void)?)
     func enableCharging(completion: (@Sendable (Bool, String?) -> Void)?)
     func inhibitCharging(completion: (@Sendable (Bool, String?) -> Void)?)
     func forceDischarge(enable: Bool, completion: (@Sendable (Bool, String?) -> Void)?)
@@ -42,6 +43,20 @@ final class ChargingManager: ObservableObject {
     @Published var chargingAPI: SMCChargingAPI = .unknown
     @Published var isHelperInstalled = false
     @Published private(set) var isPreventingSleep = false
+    @Published var nativeSupportedLimits: [Int] = []
+    @Published private(set) var nativeControlError: String?
+    private var appliedNativeLimit: Int?
+    private var nativeRequestInFlight = false
+
+    var usesNativeChargeLimit: Bool { chargingAPI == .native }
+    var chargeLimitRange: ClosedRange<Double> {
+        usesNativeChargeLimit ? Double(nativeSupportedLimits.min() ?? 80)...100 : 20...100
+    }
+
+    func setChargeLimit(_ limit: Int) {
+        settings.chargeLimit = usesNativeChargeLimit
+            ? NativeChargePolicy.nearestLimit(limit, supported: nativeSupportedLimits) ?? 100 : limit
+    }
 
     private let smc = SMCService.shared
     private let battery: BatteryService
@@ -166,6 +181,9 @@ final class ChargingManager: ObservableObject {
         client.getChargingAPI { [weak self] api in
             Task { @MainActor in
                 switch api {
+                case "native":
+                    self?.chargingAPI = .native
+                    self?.nativeSupportedLimits = NativeChargePolicy.supportedLimits()
                 case "legacy": self?.chargingAPI = .legacy
                 case "tahoe":  self?.chargingAPI = .tahoe
                 default:       break
@@ -215,6 +233,10 @@ final class ChargingManager: ObservableObject {
         } else if smc.keyExists("CH0B") {
             chargingAPI = .legacy
             log.notice("Detected legacy charging API (CH0B/CH0C)")
+        } else if !NativeChargePolicy.supportedLimits().isEmpty {
+            chargingAPI = .native
+            nativeSupportedLimits = NativeChargePolicy.supportedLimits()
+            log.notice("Detected native macOS charge-limit API")
         } else {
             chargingAPI = .unknown
             log.notice("No charging control keys detected")
@@ -258,6 +280,7 @@ final class ChargingManager: ObservableObject {
         let pct = state.percentage
         let apiName: String
         switch chargingAPI {
+        case .native: apiName = "native"
         case .tahoe: apiName = "tahoe"
         case .legacy: apiName = "legacy"
         case .unknown: apiName = "unknown"
@@ -290,6 +313,11 @@ final class ChargingManager: ObservableObject {
         lastIsCharging = state.isCharging
         defer { updateMagSafeLED() }
         defer { updateSleepAssertion(state) }
+
+        if usesNativeChargeLimit {
+            evaluateNativeState(state)
+            return
+        }
 
         // Not plugged in = on battery, nothing to control.
         // Exception: during force discharge, IOKit reports power source as "battery"
@@ -487,6 +515,7 @@ final class ChargingManager: ObservableObject {
     /// If stopChargingWhenSleeping is on: inhibits charging so the battery doesn't
     /// charge to 100% during sleep. Also stops discharge (pointless during sleep).
     func handleWillSleep() {
+        guard !usesNativeChargeLimit else { return }
         modeBeforeSleep = mode
         log.notice("Will sleep: mode=\(self.mode.displayName, privacy: .public), stopCharging=\(self.settings.stopChargingWhenSleeping, privacy: .public), disableSleep=\(self.settings.disableSleepUntilChargeLimit, privacy: .public)")
 
@@ -586,7 +615,7 @@ final class ChargingManager: ObservableObject {
     /// Update IOPMAssertion to prevent/allow system idle sleep.
     /// Called at the end of every evaluateState.
     private func updateSleepAssertion(_ state: BatteryState) {
-        guard settings.disableSleepUntilChargeLimit else {
+        guard settings.disableSleepUntilChargeLimit && !usesNativeChargeLimit else {
             if isPreventingSleep {
                 log.info("Sleep assertion: released (setting disabled)")
                 sleepAssertion.allowSleep()
@@ -638,6 +667,43 @@ final class ChargingManager: ObservableObject {
 
     // MARK: - Actions
 
+    private func evaluateNativeState(_ state: BatteryState) {
+        guard isHelperInstalled, let version = helperVersion,
+              version.isVersionAtLeast(HelperConstants.minVersionNativeChargeLimit) else {
+            mode = state.isPluggedIn ? .idle : .onBattery
+            return
+        }
+        if mode == .topUp && (!state.isPluggedIn || state.percentage >= 100) { mode = .idle }
+        let target = mode == .topUp ? 100 : settings.chargeLimit
+        guard nativeSupportedLimits.contains(target) else {
+            nativeControlError = "Choose a native limit supported by this Mac."
+            mode = .idle
+            return
+        }
+        if appliedNativeLimit != target && !nativeRequestInFlight {
+            nativeRequestInFlight = true
+            nativeControlError = nil
+            helper.setNativeChargeLimit(target) { [weak self] success, error in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.nativeRequestInFlight = false
+                    self.appliedNativeLimit = success ? target : nil
+                    self.nativeControlError = success ? nil : error ?? "Native charge limit failed"
+                    if !success { self.mode = .idle }
+                }
+            }
+        }
+        guard appliedNativeLimit == target else {
+            if mode != .topUp { mode = .idle }
+            return
+        }
+        if !state.isPluggedIn { mode = .onBattery }
+        else if mode != .topUp {
+            // Native charging can take time to transition; reflect actual charging.
+            mode = state.isCharging ? .charging : state.percentage >= target ? .paused : .idle
+        }
+    }
+
     /// Whether SMC commands can be sent (helper installed and API detected)
     private var canControlCharging: Bool {
         isHelperInstalled && chargingAPI != .unknown
@@ -651,6 +717,11 @@ final class ChargingManager: ObservableObject {
         }
         log.notice("Top Up started at \(self.battery.batteryState.percentage, privacy: .public)% (limit was \(self.settings.chargeLimit, privacy: .public)%)")
 
+        if usesNativeChargeLimit {
+            mode = .topUp
+            evaluateState(battery.batteryState)
+            return
+        }
         enableCharging()
         mode = .topUp
     }
@@ -659,6 +730,11 @@ final class ChargingManager: ObservableObject {
     /// next poll will re-evaluate the correct mode.
     func cancelTopUp() {
         guard mode == .topUp else { return }
+        if usesNativeChargeLimit {
+            mode = .idle
+            evaluateState(battery.batteryState)
+            return
+        }
         log.notice("Top Up cancelled by user at \(self.battery.batteryState.percentage, privacy: .public)%")
 
         inhibitCharging()
@@ -667,6 +743,7 @@ final class ChargingManager: ObservableObject {
 
     /// Manually start discharge
     func startDischarge() {
+        guard !usesNativeChargeLimit else { return }
         guard canControlCharging else {
             log.warning("Cannot start discharge: \(self.controlUnavailableReason, privacy: .public)")
             return
@@ -685,6 +762,7 @@ final class ChargingManager: ObservableObject {
 
     /// Manually pause charging at current level
     func pauseCharging() {
+        guard !usesNativeChargeLimit else { return }
         guard canControlCharging else {
             log.warning("Cannot pause charging: \(self.controlUnavailableReason, privacy: .public)")
             return
@@ -768,6 +846,11 @@ final class ChargingManager: ObservableObject {
 
     /// Re-send current mode's SMC commands after helper reconnects.
     private func resyncChargingState() {
+        if usesNativeChargeLimit {
+            appliedNativeLimit = nil
+            evaluateState(battery.batteryState)
+            return
+        }
         log.info("Resyncing charging state after helper reconnect (mode: \(self.mode.displayName, privacy: .public))")
         switch mode {
         case .charging, .topUp:

@@ -14,6 +14,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
 
     /// Detected charging API for this Mac
     private var chargingAPI: SMCChargingAPI = .unknown
+    private var nativeSession: NativeChargeSession?
 
     /// Whether this Mac has a MagSafe LED controllable via ACLC
     private var hasMagSafeLED = false
@@ -55,8 +56,19 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             chargingAPI = .legacy
             log.info("Detected legacy charging API (CH0B/CH0C)")
         } else {
-            chargingAPI = .unknown
-            log.info("No charging control keys detected")
+            if let client = ODNativeChargeClient.makeClient(), let limits = try? client.limits(), !limits.isEmpty {
+                chargingAPI = .native
+                nativeSession = NativeChargeSession(backend: PowerUIChargeBackend(client: client),
+                    recoveryURL: URL(fileURLWithPath: HelperConstants.stateDirectory).appendingPathComponent("native-charge-original.json"),
+                    supportedLimits: limits.map(\.intValue))
+                HelperState.ensureDirectory()
+                do { try nativeSession?.restore() }
+                catch { log.error("Native charge recovery failed: \(error.localizedDescription, privacy: .public)") }
+                log.info("Detected native macOS charge-limit API")
+            } else {
+                chargingAPI = .unknown
+                log.info("No charging control API detected")
+            }
         }
 
         // Check for MagSafe LED control (not all Macs have MagSafe)
@@ -118,7 +130,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             } else {
                 log.warning("CHTE readback failed: key not readable")
             }
-        case .unknown:
+        case .native, .unknown:
             break
         }
     }
@@ -204,7 +216,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         log.info("Client disconnected (last state: \(state?.rawValue ?? "none", privacy: .public))")
 
         // If charging was inhibited when the app disconnected, reset immediately
-        if state == .inhibited {
+        if state == .inhibited || chargingAPI == .native {
             log.warning("Client disconnected while charging inhibited — resetting to safe defaults")
             resetChargingDirect()
         }
@@ -212,11 +224,28 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
 
     // MARK: - HelperProtocol
 
+    func setNativeChargeLimit(_ limit: Int, reply: @escaping (Bool, String?) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard chargingAPI == .native, let nativeSession else {
+            reply(false, "Native charging API unavailable")
+            return
+        }
+        do {
+            HelperState.write(.inhibited)
+            try nativeSession.apply(limit)
+            log.info("Native charge limit accepted: \(limit, privacy: .public)%")
+            reply(true, nil)
+        } catch {
+            reply(false, error.localizedDescription)
+        }
+    }
+
     func enableCharging(reply: @escaping (Bool, String?) -> Void) {
         lock.lock()
         defer { lock.unlock() }
 
-        guard chargingAPI != .unknown else {
+        guard chargingAPI != .unknown && chargingAPI != .native else {
             reply(false, "No charging API detected")
             return
         }
@@ -230,7 +259,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             case .tahoe:
                 log.info("Writing CHTE: [00 00 00 00]")
                 try smc.writeKey("CHTE", bytes: [0x00, 0x00, 0x00, 0x00])
-            case .unknown:
+            case .native, .unknown:
                 break
             }
             verifyChargingKey(expected: false)
@@ -247,7 +276,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         lock.lock()
         defer { lock.unlock() }
 
-        guard chargingAPI != .unknown else {
+        guard chargingAPI != .unknown && chargingAPI != .native else {
             reply(false, "No charging API detected")
             return
         }
@@ -261,7 +290,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
             case .tahoe:
                 log.info("Writing CHTE: [01 00 00 00]")
                 try smc.writeKey("CHTE", bytes: [0x01, 0x00, 0x00, 0x00])
-            case .unknown:
+            case .native, .unknown:
                 break
             }
             // Read-back verification: confirm the write took effect
@@ -279,7 +308,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         lock.lock()
         defer { lock.unlock() }
 
-        guard chargingAPI != .unknown else {
+        guard chargingAPI != .unknown && chargingAPI != .native else {
             reply(false, "No charging API detected")
             return
         }
@@ -294,7 +323,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 let byte: UInt8 = enable ? 0x08 : 0x00
                 log.info("Writing CHIE: [\(self.hexString([byte]), privacy: .public)]")
                 try smc.writeKey("CHIE", bytes: [byte])
-            case .unknown:
+            case .native, .unknown:
                 break
             }
             if enable {
@@ -307,7 +336,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 case .tahoe:
                     log.info("Writing CHTE: [01 00 00 00] (discharge + inhibit)")
                     try smc.writeKey("CHTE", bytes: [0x01, 0x00, 0x00, 0x00])
-                case .unknown:
+                case .native, .unknown:
                     break
                 }
                 HelperState.write(.inhibited)
@@ -327,6 +356,15 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
     func resetToDefaults(reply: @escaping (Bool, String?) -> Void) {
         lock.lock()
         defer { lock.unlock() }
+
+        if chargingAPI == .native {
+            do {
+                try nativeSession?.restore()
+                HelperState.clear()
+                reply(true, nil)
+            } catch { reply(false, error.localizedDescription) }
+            return
+        }
 
         resetChargingDirectLocked()
         reply(true, nil)
@@ -348,6 +386,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
 
     func getChargingAPI(reply: @escaping (String) -> Void) {
         switch chargingAPI {
+        case .native: reply("native")
         case .legacy:  reply("legacy")
         case .tahoe:   reply("tahoe")
         case .unknown: reply("unknown")
@@ -397,7 +436,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
         let hasLED = hasMagSafeLED
         lock.unlock()
 
-        guard sleepSetting && api != .unknown else {
+        guard sleepSetting && api != .unknown && api != .native else {
             log.info("Sleep callback: skipped (stopChargingWhenSleeping=\(sleepSetting, privacy: .public), api=\(String(describing: api), privacy: .public))")
             return
         }
@@ -412,7 +451,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 try smc.writeKey("CH0C", bytes: [0x02])
             case .tahoe:
                 try smc.writeKey("CHTE", bytes: [0x01, 0x00, 0x00, 0x00])
-            case .unknown:
+            case .native, .unknown:
                 break
             }
             // Update LED to reflect inhibited state (visible with lid closed).
@@ -441,6 +480,14 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
 
     /// Reset charging — caller must already hold lock
     private func resetChargingDirectLocked() {
+        if chargingAPI == .native {
+            do {
+                try nativeSession?.restore()
+                HelperState.clear()
+                log.info("Restored original native charge limit")
+            } catch { log.error("Native charge restore failed: \(error.localizedDescription, privacy: .public)") }
+            return
+        }
         guard chargingAPI != .unknown else { return }
 
         do {
@@ -450,7 +497,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 try smc.writeKey("CH0I", bytes: [0x00])
             case .tahoe:
                 try smc.writeKey("CHIE", bytes: [0x00])
-            case .unknown:
+            case .native, .unknown:
                 break
             }
 
@@ -461,7 +508,7 @@ final class HelperDelegate: NSObject, NSXPCListenerDelegate, HelperProtocol {
                 try smc.writeKey("CH0C", bytes: [0x00])
             case .tahoe:
                 try smc.writeKey("CHTE", bytes: [0x00, 0x00, 0x00, 0x00])
-            case .unknown:
+            case .native, .unknown:
                 break
             }
 

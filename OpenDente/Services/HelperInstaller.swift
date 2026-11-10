@@ -57,6 +57,18 @@ enum HelperInstaller {
         }
     }
 
+    /// Refresh registration after replacing a locally signed app/helper build.
+    @discardableResult
+    static func reinstall() -> Bool {
+        do {
+            try service.unregister()
+            return register()
+        } catch {
+            log.error("Failed to remove old helper registration: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
     /// Open System Settings to the Login Items pane where the user can toggle the helper
     static func openSystemSettings() {
         SMAppService.openSystemSettingsLoginItems()

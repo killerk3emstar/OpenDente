@@ -33,7 +33,7 @@ struct PopoverView: View {
 
     /// Pure function for testability
     static func canDischarge(isPluggedIn: Bool, percentage: Int, chargeLimit: Int, isHelperInstalled: Bool, chargingAPI: SMCChargingAPI) -> Bool {
-        isPluggedIn && percentage > chargeLimit && isHelperInstalled && chargingAPI != .unknown
+        isPluggedIn && percentage > chargeLimit && isHelperInstalled && chargingAPI != .unknown && chargingAPI != .native
     }
 
     var body: some View {
@@ -346,9 +346,9 @@ struct PopoverView: View {
                 Slider(
                     value: Binding(
                         get: { Double(settings.chargeLimit) },
-                        set: { settings.chargeLimit = Int(($0 / 5).rounded() * 5) }
+                        set: { charging.setChargeLimit(Int(($0 / 5).rounded() * 5)) }
                     ),
-                    in: 20...100
+                    in: charging.chargeLimitRange
                 )
                 .controlSize(.small)
             }

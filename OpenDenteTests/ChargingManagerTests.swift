@@ -12,12 +12,18 @@ final class MockChargingControl: ChargingControl, @unchecked Sendable {
         case forceDischarge(enable: Bool)
         case resetToDefaults
         case setMagSafeLED(color: UInt8)
+        case setNativeChargeLimit(Int)
     }
 
     /// All calls in order — use this to verify exact sequences of SMC operations
     private(set) var calls: [Call] = []
 
     func clearCalls() { calls.removeAll() }
+
+    func setNativeChargeLimit(_ limit: Int, completion: (@Sendable (Bool, String?) -> Void)?) {
+        calls.append(.setNativeChargeLimit(limit))
+        completion?(!shouldFail, shouldFail ? "mock failure" : nil)
+    }
 
     /// If true, completion reports failure (simulates helper crash/disconnect)
     var shouldFail = false

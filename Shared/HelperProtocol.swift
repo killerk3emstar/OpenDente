@@ -27,6 +27,8 @@ import Foundation
     /// Get the detected charging API name ("legacy", "tahoe", or "unknown")
     func getChargingAPI(reply: @escaping (String) -> Void)
 
+    func setNativeChargeLimit(_ limit: Int, reply: @escaping (Bool, String?) -> Void)
+
     /// Set the MagSafe LED color (0x03 = green, 0x04 = orange, 0x00 = system default)
     func setMagSafeLED(color: UInt8, reply: @escaping (Bool, String?) -> Void)
 

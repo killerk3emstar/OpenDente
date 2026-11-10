@@ -100,6 +100,7 @@ enum DiagnosticExporter {
 
         let apiName: String
         switch charging.chargingAPI {
+        case .native: apiName = "native"
         case .tahoe: apiName = "Tahoe (CHTE/CHIE)"
         case .legacy: apiName = "Legacy (CH0B/CH0C)"
         case .unknown: apiName = "Not detected"
