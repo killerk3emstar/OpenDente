@@ -156,6 +156,21 @@ final class HelperClient: @unchecked Sendable {
 
     // MARK: - Protocol Methods
 
+    func setNativeChargeLimit(_ limit: Int, completion: (@Sendable (Bool, String?) -> Void)?) {
+        lock.lock()
+        let conn = connection
+        lock.unlock()
+        let finish: @Sendable (Bool, String?) -> Void = { success, error in
+            if let completion { DispatchQueue.main.async { completion(success, error) } }
+        }
+        guard let conn else { finish(false, "Helper is not connected"); return }
+        let remote = conn.remoteObjectProxyWithErrorHandler { error in
+            finish(false, error.localizedDescription)
+        }
+        guard let proxy = remote as? HelperProtocol else { finish(false, "Helper proxy unavailable"); return }
+        proxy.setNativeChargeLimit(limit, reply: finish)
+    }
+
     func enableCharging(completion: (@Sendable (Bool, String?) -> Void)? = nil) {
         withProxy { helper in
             helper.enableCharging { success, error in

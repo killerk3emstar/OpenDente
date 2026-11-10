@@ -60,6 +60,15 @@ struct GeneralTab: View {
                         .foregroundStyle(charging.isHelperInstalled ? .green : .orange)
                 }
 
+                if charging.isHelperInstalled {
+                    Button("Reinstall Helper") {
+                        if HelperInstaller.reinstall() { charging.connectToHelper() }
+                    }
+                    Text("Use after replacing a locally built app to refresh the helper registration.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if !charging.isHelperInstalled {
                     helperActions
 
@@ -165,13 +174,21 @@ struct ChargingTab: View {
                     Slider(
                         value: Binding(
                             get: { Double(settings.chargeLimit) },
-                            set: { settings.chargeLimit = Int(($0 / 5).rounded() * 5) }
+                            set: { charging.setChargeLimit(Int(($0 / 5).rounded() * 5)) }
                         ),
-                        in: 20...100
+                        in: charging.chargeLimitRange
                     )
                     Text("\(settings.chargeLimit)%")
                         .font(.system(.body, design: .monospaced))
                         .frame(width: 45, alignment: .trailing)
+                }
+                if charging.usesNativeChargeLimit {
+                    Text("macOS manages this limit, including during sleep. It may drain the battery toward the limit or occasionally charge fully for battery calibration. Sailing, heat pause, and manual discharge are unavailable.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let error = charging.nativeControlError {
+                    Text(error).foregroundStyle(.red)
                 }
             }
 
@@ -197,6 +214,7 @@ struct ChargingTab: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .disabled(charging.usesNativeChargeLimit)
 
             Section("Heat Protection") {
                 Toggle("Enable Heat Protection", isOn: $settings.heatProtectionEnabled)
@@ -221,9 +239,11 @@ struct ChargingTab: View {
                     }
                 }
             }
+            .disabled(charging.usesNativeChargeLimit)
 
             Section("Other") {
                 Toggle("Automatic Discharge", isOn: $settings.automaticDischarge)
+                    .disabled(charging.usesNativeChargeLimit)
                 Toggle("Control MagSafe LED", isOn: $settings.controlMagSafeLED)
                 if settings.controlMagSafeLED {
                     Toggle("Turn off LED when not charging", isOn: $settings.magSafeLEDOffWhenInactive)
@@ -238,10 +258,12 @@ struct ChargingTab: View {
                         .foregroundStyle(.secondary)
                 }
                 Toggle("Stop Charging when Sleeping", isOn: $settings.stopChargingWhenSleeping)
+                    .disabled(charging.usesNativeChargeLimit)
                 Text("Inhibits charging before sleep so the battery stays at its current level.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("Disable Sleep until Charge Limit", isOn: $settings.disableSleepUntilChargeLimit)
+                    .disabled(charging.usesNativeChargeLimit)
                 Text("Keeps Mac awake while charging or discharging toward the limit.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -543,6 +565,7 @@ struct BatteryInfoTab: View {
 
     private var chargingAPIName: String {
         switch charging.chargingAPI {
+        case .native: return "Native macOS charge limit"
         case .legacy: return "Legacy (CH0B/CH0C)"
         case .tahoe:  return "Tahoe (CHTE/CHIE)"
         case .unknown: return "Not detected"
